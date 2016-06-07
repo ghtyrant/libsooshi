@@ -1,0 +1,4 @@
+__pycache__
+mooshi
+*.o
+.ycm_extra_conf.py
