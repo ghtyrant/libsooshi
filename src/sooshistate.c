@@ -55,6 +55,64 @@ sooshi_on_object_added(GDBusObjectManager *objman, GDBusObject *obj, gpointer us
 }
 
 static void
+sooshi_on_serial_out_ready(GDBusProxy *proxy, GVariant *changed_properties, GStrv invalidated_properties, gpointer user_data)
+{
+    SooshiState *state = (SooshiState*)user_data;
+
+    GVariantDict *dict = g_variant_dict_new(changed_properties);
+
+    if (g_variant_dict_contains(dict, "Value"))
+        g_info("Value has been updated!");
+
+    GVariant *value = g_variant_dict_lookup_value(dict, "Value", G_VARIANT_TYPE("ay"));
+
+    if (value)
+    {
+        //g_info("Just read: %d", g_variant_get_byte(value));
+
+        g_info("Reading value ...");
+        GVariantIter *iter = g_variant_iter_new(value);
+        gchar buf[10];
+        gchar tmp;
+        gint i = 0;
+        while (g_variant_iter_loop(iter, "y", &tmp))
+        {
+            if (i == 0)
+                g_info("Message Sequence: %d", tmp);
+            else
+            {
+                buf[i-1] = tmp;
+                g_info("    [%d] %x (%c, %d)", i, buf[i-1], buf[i-1], buf[i-1]);
+            }
+            i++;
+        }
+        g_variant_unref(value);
+
+        guint pcb_v = sooshi_convert_to_int24(buf);
+        g_info("PCB_VERSION: %d", pcb_v);
+    }
+
+    g_variant_dict_unref(dict);
+}
+
+guint sooshi_convert_to_int24(gchar *buffer)
+{
+    // 
+    guchar tmp[4];
+    tmp[0] = buffer[2] < 0 ? (guchar)0xFF : (guchar)0x00;
+    tmp[1] = buffer[2];
+    tmp[2] = buffer[1];
+    tmp[3] = buffer[0];
+
+    gint value = tmp[3] | tmp[2] << 8 | tmp[1] << 16 | tmp[0] << 24;
+
+    //if (buffer[3] < 0)
+    //    tmp |= 0xFF;
+
+    return value;
+}
+
+static void
 sooshi_on_object_added_connected(GDBusObjectManager *objman, GDBusObject *obj, gpointer user_data)
 {
     SooshiState *state = (SooshiState*)user_data;
@@ -75,59 +133,45 @@ sooshi_on_object_added_connected(GDBusObjectManager *objman, GDBusObject *obj, g
     {
         g_info("Found serial in!");
         state->serial_in = G_DBUS_PROXY(inter);
-
-        /*GVariantBuilder *b;
-        GVariant *dict;
-
-        b = g_variant_builder_new(G_VARIANT_TYPE("({sv})"));
-        g_variant_builder_add(b, "{sv}", "offset", g_variant_new_int32(0));
-        dict = g_variant_builder_end(b);
-
-        GError *error = NULL;
-        GVariant *ret = g_dbus_proxy_call_sync(state->info_characteristic,
-            "ReadValue",
-            dict,
-            G_DBUS_CALL_FLAGS_NONE,
-            -1,
-            NULL,
-            &error);
-
-        //g_variant_unref(dict);
-
-        if (error)
-        {
-            g_info("Error ReadValue(): %s", error->message);
-            g_error_free(error);
-            return;
-        }
-
-        guchar bytes[sizeof(MeterInfo)];
-
-        GVariantIter *iter;
-        g_variant_get(ret, "a(y)", &iter);
-        guchar str;
-        guint actual_length = 0;
-        while (g_variant_iter_loop (iter, "(y)", &str))
-        {
-            bytes[actual_length++] = str;
-        }
-        g_variant_iter_free (iter);
-
-        MeterInfo *tmp = (MeterInfo*)bytes;
-        g_info("MeterInfo: PCB-Version: %d, Assembly-Variant: %d, Lot-Number: %d, Buildtime: %d",
-                tmp->pcb_version, tmp->assembly_variant, tmp->lot_number, tmp->build_time);
-        g_variant_unref(ret);*/
     }
     else if (g_ascii_strcasecmp(uuid, sout_uuid) == 0)
     {
         g_info("Found serial out!");
         state->serial_out = G_DBUS_PROXY(inter);
+
+        g_info("Starting read routine ...");
+        state->properties_changed_id = g_signal_connect(
+            state->serial_out,
+            "g-properties-changed",
+            G_CALLBACK(sooshi_on_serial_out_ready),
+            state);
+
+        GError *error = NULL;
+        g_dbus_proxy_call_sync(state->serial_out,
+            "StartNotify",
+            NULL,
+            G_DBUS_CALL_FLAGS_NONE,
+            -1,
+            NULL,
+            &error);
+
+        if (error != NULL)
+        {
+            g_error("Error starting read routine: %s", error->message);
+            g_error_free(error);
+            return;
+        }
+
+        GVariant *v_notifying = g_dbus_proxy_get_cached_property(state->serial_out, "Notifying");
+        gboolean notifying = g_variant_get_boolean(v_notifying);
+        g_info("Notifying enabled on path '%s': %d", g_dbus_proxy_get_object_path(state->serial_out), notifying);
+        g_variant_unref(v_notifying);
     }
 
     g_variant_unref(v_uuid);
 
     if (state->serial_in && state->serial_out)
-        g_main_loop_quit(state->loop);
+        sooshi_test(state);
 }
 
 
@@ -245,7 +289,10 @@ gboolean sooshi_find_mooshi(SooshiState *state)
 
     const gchar* uuid = METER_SERVICE_UUID;
     GDBusProxy *meter = sooshi_dbus_find_interface_proxy_if(state, BLUEZ_DEVICE_INTERFACE, sooshi_cond_is_mooshimeter, (gpointer)uuid);
-    sooshi_add_mooshimeter(state, meter);
+
+    if (meter)
+        sooshi_add_mooshimeter(state, meter);
+
     return (state->mooshimeter != NULL);
 }
 
@@ -323,6 +370,7 @@ void sooshi_wait_until_mooshimeter_found(SooshiState *state, gint64 timeout)
 
 void sooshi_start(SooshiState *state, sooshi_run_handler handler)
 {
+    g_debug("Starting main loop ...");
     state->loop = g_main_loop_new (NULL, FALSE);
     g_main_loop_run(state->loop);
 }
@@ -352,6 +400,8 @@ void sooshi_connect_mooshi(SooshiState *state)
         return;
     }
 
+    g_debug("Done!");
+
     state->connected = TRUE; 
 }
 
@@ -365,26 +415,34 @@ void sooshi_add_mooshimeter(SooshiState *state, GDBusProxy *meter)
 void sooshi_test(SooshiState *state)
 {
     GVariantBuilder *b;
-    GVariant *str;
+    GVariant *string, *dict, *final;
 
-    b = g_variant_builder_new(G_VARIANT_TYPE("((ay)({sv}))"));
-    g_variant_builder_open(b, G_VARIANT_TYPE("ay"));
     const gchar* tmp = "ADMIN:TREE";
-    while (*tmp++)
-        g_variant_builder_add(b, "y", g_variant_new_byte(*tmp));
+    b = g_variant_builder_new(G_VARIANT_TYPE("(aya{sv})"));
+    g_variant_builder_open(b, G_VARIANT_TYPE("ay"));
+    g_variant_builder_add(b, "y", (guchar)0);
+    g_variant_builder_add(b, "y", (guchar)0);
+    /*while(*tmp)
+    {
+        g_variant_builder_add(b, "y", (guchar)*tmp);
+        tmp++;
+    }*/
     g_variant_builder_close(b);
 
-    str = g_variant_builder_end(b);
-
-    g_variant_builder_open(b, G_VARIANT_TYPE("{sv}"));
-    g_variant_builder_add(b, "{sv}", "offset", g_variant_new_int32(0));
+    g_variant_builder_open(b, G_VARIANT_TYPE("a{sv}"));
+    g_variant_builder_add(b, "{sv}", "offset", g_variant_new_int16(0));
     g_variant_builder_close(b);
-    str = g_variant_builder_end(b);
+    final = g_variant_builder_end(b);
+
+    GVariant *v_name = g_dbus_proxy_get_cached_property(state->mooshimeter, "Connected");
+    gboolean connected = g_variant_get_boolean(v_name);
+
+    g_info("Mooshimeter still connected: %d", connected);
 
     GError *error = NULL;
     g_dbus_proxy_call_sync(state->serial_in,
         "WriteValue",
-        str,
+        final,
         G_DBUS_CALL_FLAGS_NONE,
         -1,
         NULL,
@@ -392,7 +450,7 @@ void sooshi_test(SooshiState *state)
 
     if (error != NULL)
     {
-        g_error("Error connecting to Mooshimeter: %s", error->message);
+        g_error("Error calling WriteValue: %s", error->message);
         g_error_free(error);
         return;
     }

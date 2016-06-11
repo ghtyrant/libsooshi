@@ -32,6 +32,7 @@ struct _SooshiState
     GMutex mooshimeter_mutex;
 
     GDBusProxy *serial_in;
+    gulong properties_changed_id;
     GDBusProxy *serial_out;
 
     GMainLoop *loop;
@@ -61,6 +62,8 @@ gboolean sooshi_cond_is_mooshimeter(GDBusInterface *interface, gpointer user_dat
 gboolean sooshi_find_mooshi(SooshiState *state);
 void sooshi_start(SooshiState *state, sooshi_run_handler handler);
 void sooshi_add_mooshimeter(SooshiState *state, GDBusProxy *meter);
+void sooshi_test(SooshiState *state);
+guint sooshi_convert_to_int24(gchar *buffer);
 
 // Bluetooth Scanning
 gboolean sooshi_start_scan(SooshiState *state);
