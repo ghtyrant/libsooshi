@@ -36,6 +36,8 @@ struct _SooshiState
     GDBusProxy *serial_out;
 
     GMainLoop *loop;
+
+    GByteArray *buffer;
 };
 
 struct _SooshiStateClass
@@ -64,6 +66,10 @@ void sooshi_start(SooshiState *state, sooshi_run_handler handler);
 void sooshi_add_mooshimeter(SooshiState *state, GDBusProxy *meter);
 void sooshi_test(SooshiState *state);
 guint sooshi_convert_to_int24(gchar *buffer);
+guint16 sooshi_convert_to_uint16(guint8 *buffer);
+void sooshi_parse_response(SooshiState *state);
+void sooshi_parse_admin_tree(SooshiState *state, gulong compressed_size, guint8 *buffer);
+
 
 // Bluetooth Scanning
 gboolean sooshi_start_scan(SooshiState *state);

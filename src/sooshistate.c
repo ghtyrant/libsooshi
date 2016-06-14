@@ -1,3 +1,5 @@
+#include <stdio.h>
+#include <zlib.h>
 #include "sooshistate.h"
 
 G_DEFINE_TYPE(SooshiState, sooshi_state, G_TYPE_OBJECT);
@@ -17,6 +19,8 @@ static void sooshi_state_init(SooshiState *state)
             NULL,
             G_TYPE_NONE,
             0);
+
+    state->buffer = g_byte_array_new();
 }
 
 static void
@@ -72,7 +76,7 @@ sooshi_on_serial_out_ready(GDBusProxy *proxy, GVariant *changed_properties, GStr
 
         g_info("Reading value ...");
         GVariantIter *iter = g_variant_iter_new(value);
-        gchar buf[10];
+        guint8 buf[20];
         gchar tmp;
         gint i = 0;
         while (g_variant_iter_loop(iter, "y", &tmp))
@@ -82,34 +86,70 @@ sooshi_on_serial_out_ready(GDBusProxy *proxy, GVariant *changed_properties, GStr
             else
             {
                 buf[i-1] = tmp;
-                g_info("    [%d] %x (%c, %d)", i, buf[i-1], buf[i-1], buf[i-1]);
+                g_info("    [%d:%d] %x (%c, %d)", i, state->buffer->len, buf[i-1], buf[i-1], buf[i-1]);
             }
             i++;
         }
         g_variant_unref(value);
 
-        guint pcb_v = sooshi_convert_to_int24(buf);
-        g_info("PCB_VERSION: %d", pcb_v);
+        g_byte_array_append(state->buffer, buf, i);
+        sooshi_parse_response(state);
+
+        //guint pcb_v = sooshi_convert_to_int24(buf);
+        //g_info("PCB_VERSION: %d", pcb_v);
     }
 
     g_variant_dict_unref(dict);
+}
+
+void sooshi_parse_response(SooshiState *state)
+{
+    guint8 op_code = state->buffer->data[0];
+    guint16 length = 0;
+
+    switch(op_code)
+    {
+        case 1:
+            length = sooshi_convert_to_uint16(state->buffer->data + 1);
+
+            // Did we receive the full tree yet?
+            if (state->buffer->len - 1 < length)
+                return;
+
+            sooshi_parse_admin_tree(state, length, state->buffer->data + 3);
+
+            break;
+        default:
+            g_warning("Unknown opcode: %u", op_code);
+    }
+}
+
+void sooshi_parse_admin_tree(SooshiState *state, gulong compressed_size, guint8 *buffer)
+{
+    guint8 *zbuffer[compressed_size * 4];
+    gulong uncompressed_size = 0;
+
+    uncompress((Bytef*) zbuffer, &uncompressed_size, (Bytef*) buffer, compressed_size);
+
+    zbuffer[compressed_size * 4 - 1] = 0;
+    g_info("Tree: %s", zbuffer);
+}
+
+guint16 sooshi_convert_to_uint16(guint8 *buffer)
+{
+    return buffer[0] | buffer[1] << 8;
 }
 
 guint sooshi_convert_to_int24(gchar *buffer)
 {
     // 
     guchar tmp[4];
-    tmp[0] = buffer[2] < 0 ? (guchar)0xFF : (guchar)0x00;
-    tmp[1] = buffer[2];
+    tmp[0] = buffer[0] < 0 ? (guchar)0xFF : (guchar)0x00;
+    tmp[1] = buffer[0];
     tmp[2] = buffer[1];
-    tmp[3] = buffer[0];
+    tmp[3] = buffer[2];
 
-    gint value = tmp[3] | tmp[2] << 8 | tmp[1] << 16 | tmp[0] << 24;
-
-    //if (buffer[3] < 0)
-    //    tmp |= 0xFF;
-
-    return value;
+    return (guint)tmp[0] | (guint)tmp[1] << 8 | (guint)tmp[2] << 16 | (guint)tmp[3] << 24;
 }
 
 static void
@@ -218,6 +258,8 @@ void sooshi_state_delete(SooshiState *state)
     if (state->adapter) g_object_unref(state->adapter);
     if (state->mooshimeter) g_object_unref(state->mooshimeter);
     if (state->mooshimeter_dbus_path) g_free(state->mooshimeter_dbus_path);
+
+    g_byte_array_unref(state->buffer);
 
     g_object_unref(state);
 }
@@ -421,7 +463,7 @@ void sooshi_test(SooshiState *state)
     b = g_variant_builder_new(G_VARIANT_TYPE("(aya{sv})"));
     g_variant_builder_open(b, G_VARIANT_TYPE("ay"));
     g_variant_builder_add(b, "y", (guchar)0);
-    g_variant_builder_add(b, "y", (guchar)0);
+    g_variant_builder_add(b, "y", (guchar)1);
     /*while(*tmp)
     {
         g_variant_builder_add(b, "y", (guchar)*tmp);
