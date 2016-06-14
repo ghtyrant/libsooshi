@@ -13,6 +13,44 @@
 #define METER_SERIAL_IN    "1BC5FFA1-0200-62AB-E411-F254E005DBD4"
 #define METER_SERIAL_OUT   "1BC5FFA2-0200-62AB-E411-F254E005DBD4"
 
+typedef enum
+{
+    NOTSET = -1,
+    PLAIN,
+    LINK,
+    CHOOSER,
+    VAL_U8,
+    VAL_U16,
+    VAL_U32,
+    VAL_S8,
+    VAL_S16,
+    VAL_S32,
+    VAL_STR,
+    VAL_BIN,
+    VAL_FLT
+} SOOSHI_NODE_TYPE;
+
+typedef struct _SooshiNode SooshiNode;
+
+struct _SooshiNode
+{
+    gchar *name;
+    guint op_code;
+    SOOSHI_NODE_TYPE type;
+    GList *children;
+    SooshiNode *parent;
+
+    GVariant *value;
+};
+
+typedef guint32 crc32_t;
+#define CRC32_POLYNOMIAL          0x04C11DB7
+#define CRC32_INITIAL_REMAINDER   0xFFFFFFFF
+#define CRC32_FINAL_XOR_VALUE     0xFFFFFFFF
+#define CRC32_CHECK_VALUE         0xCBF43926
+#define CRC32_WIDTH               (8 * sizeof(crc32_t))
+#define CRC32_TOPBIT              (1 << (CRC32_WIDTH - 1))
+
 typedef struct _SooshiState SooshiState;
 typedef struct _SooshiStateClass SooshiStateClass;
 
@@ -38,6 +76,11 @@ struct _SooshiState
     GMainLoop *loop;
 
     GByteArray *buffer;
+
+    SooshiNode *root_node;
+
+    /* CRC32 helper */
+    crc32_t crc_table[256];
 };
 
 struct _SooshiStateClass
@@ -61,6 +104,7 @@ void sooshi_state_delete(SooshiState *state);
 GDBusProxy *sooshi_dbus_find_interface_proxy_if(SooshiState *state, const gchar* interface_name, dbus_conditional_func_t cond_func, gpointer user_data);
 gboolean sooshi_find_adapter(SooshiState *state);
 gboolean sooshi_cond_is_mooshimeter(GDBusInterface *interface, gpointer user_data);
+gboolean sooshi_cond_has_uuid(GDBusInterface *interface, gpointer user_data);
 gboolean sooshi_find_mooshi(SooshiState *state);
 void sooshi_start(SooshiState *state, sooshi_run_handler handler);
 void sooshi_add_mooshimeter(SooshiState *state, GDBusProxy *meter);
@@ -68,8 +112,12 @@ void sooshi_test(SooshiState *state);
 guint sooshi_convert_to_int24(gchar *buffer);
 guint16 sooshi_convert_to_uint16(guint8 *buffer);
 void sooshi_parse_response(SooshiState *state);
-void sooshi_parse_admin_tree(SooshiState *state, gulong compressed_size, guint8 *buffer);
+void sooshi_parse_admin_tree(SooshiState *state, gulong compressed_size, const guint8 *buffer);
+void sooshi_debug_dump_tree(SooshiNode *node, gint indent);
+void sooshi_enable_notify(SooshiState *state);
 
+SooshiNode *sooshi_node_find(SooshiState *state, const gchar *path, SooshiNode *start);
+void sooshi_node_set_value(SooshiState *state, SooshiNode *node, gpointer value);
 
 // Bluetooth Scanning
 gboolean sooshi_start_scan(SooshiState *state);

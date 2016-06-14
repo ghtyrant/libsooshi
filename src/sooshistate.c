@@ -1,8 +1,9 @@
 #include <stdio.h>
 #include <zlib.h>
+#include <string.h>
 #include "sooshistate.h"
 
-G_DEFINE_TYPE(SooshiState, sooshi_state, G_TYPE_OBJECT);
+G_DEFINE_TYPE(SooshiState, sooshi_state, G_TYPE_OBJECT)
 
 static void sooshi_state_class_init(SooshiStateClass *class)
 {
@@ -21,6 +22,8 @@ static void sooshi_state_init(SooshiState *state)
             0);
 
     state->buffer = g_byte_array_new();
+
+    sooshi_crc32_init(state);
 }
 
 static void
@@ -86,13 +89,13 @@ sooshi_on_serial_out_ready(GDBusProxy *proxy, GVariant *changed_properties, GStr
             else
             {
                 buf[i-1] = tmp;
-                g_info("    [%d:%d] %x (%c, %d)", i, state->buffer->len, buf[i-1], buf[i-1], buf[i-1]);
+                g_info("    [%d:%d] %x (%c, %d)", i, state->buffer->len + (i - 1), buf[i-1], buf[i-1], buf[i-1]);
             }
             i++;
         }
         g_variant_unref(value);
 
-        g_byte_array_append(state->buffer, buf, i);
+        g_byte_array_append(state->buffer, buf, i - 1);
         sooshi_parse_response(state);
 
         //guint pcb_v = sooshi_convert_to_int24(buf);
@@ -116,6 +119,7 @@ void sooshi_parse_response(SooshiState *state)
             if (state->buffer->len - 1 < length)
                 return;
 
+            g_debug("Size of tree: %d", length);
             sooshi_parse_admin_tree(state, length, state->buffer->data + 3);
 
             break;
@@ -124,15 +128,148 @@ void sooshi_parse_response(SooshiState *state)
     }
 }
 
-void sooshi_parse_admin_tree(SooshiState *state, gulong compressed_size, guint8 *buffer)
+void sooshi_debug_dump_tree(SooshiNode *node, gint indent)
 {
-    guint8 *zbuffer[compressed_size * 4];
-    gulong uncompressed_size = 0;
+    printf("%*s (%d, %d children)\n", (gint)(indent + strlen(node->name)), node->name, node->type, g_list_length(node->children));
 
-    uncompress((Bytef*) zbuffer, &uncompressed_size, (Bytef*) buffer, compressed_size);
+    GList *elem;
+    SooshiNode *item;
+    for(elem = node->children; elem; elem = elem->next)
+    {
+        item = elem->data;
+        sooshi_debug_dump_tree(item, indent + 4);
+    }
+}
 
-    zbuffer[compressed_size * 4 - 1] = 0;
-    g_info("Tree: %s", zbuffer);
+SooshiNode *sooshi_node_find(SooshiState *state, gchar *path, SooshiNode *start)
+{
+    if (!start)
+       start = state->root_node; 
+    
+    gchar *sep = g_strstr_length(path, -1, ":");
+
+    if (sep)
+        *sep = '0';
+
+    GList *elem;
+    SooshiNode *item;
+    for(elem = node->children; elem; elem = elem->next)
+    {
+        item = elem->data;
+
+        if (g_strcmp0(path, item->name) == 0)
+        {
+            if (sep == NULL)
+                return item;
+            else
+                return sooshi_node_find(state, sep + 1, item);
+        }
+    }
+}
+
+void sooshi_node_set_value(SooshiState *state, SooshiNode *node, gpointer value)
+{
+    g_return_if_fail(state != NULL);
+    g_return_if_fail(node != NULL);
+
+    switch(node->type)
+    {
+        case VAL_U8:
+            node->value = g_variant_new_byte((guchar) value);
+            break;
+        case VAL_U16:
+            node->value = g_variant_new_uint16((guint16)value);
+            break;
+        case VAL_U32:
+            node->value = g_variant_new_uint32((guint32)value);
+            break;
+        case VAL_S8:
+            node->value = g_variant_new_byte((gint8)value);
+            break;
+        case VAL_S16:
+            node->value = g_variant_new_int16((gint16)value);
+            break;
+        case VAL_S32:
+            node->value = g_variant_new_int32((gint32)value);
+            break;
+    }
+}
+
+static
+SooshiNode *sooshi_parse_node(SooshiState *state, SooshiNode *parent, const guint8 *buffer, gulong *bytes_read)
+{
+    SooshiNode *node = g_new0(SooshiNode, 1);
+    
+    node->parent = parent;
+    node->type = (SOOSHI_NODE_TYPE)buffer[0];
+    guchar name_len = buffer[1];
+
+    if (name_len)
+        node->name = g_strndup((const gchar*)buffer + 2, name_len);
+    else
+        node->name = g_strdup("ROOT");
+    
+    guchar num_childs = buffer[2 + name_len];
+
+    buffer += 3 + name_len;
+    gulong current_bytes_read = 3 + name_len;
+
+    for (guint i = 0; i < num_childs; ++i)
+    {
+        gulong tmp_bytes_read = 0;
+        node->children = g_list_append(node->children, sooshi_parse_node(state, node, buffer, &tmp_bytes_read));
+        buffer += tmp_bytes_read;
+        current_bytes_read += tmp_bytes_read;
+    }
+
+    if (bytes_read)
+        *bytes_read = current_bytes_read;
+
+    return node;
+}
+
+void sooshi_parse_admin_tree(SooshiState *state, gulong compressed_size, const guint8 *buffer)
+{
+    GInputStream *in = g_memory_input_stream_new_from_data(buffer, compressed_size, NULL);
+    GZlibDecompressor *decompressor = g_zlib_decompressor_new(G_ZLIB_COMPRESSOR_FORMAT_ZLIB);
+    GOutputStream *out = g_memory_output_stream_new_resizable();
+    GOutputStream *z_out = g_converter_output_stream_new(G_OUTPUT_STREAM(out), G_CONVERTER(decompressor));
+
+    GError *error = NULL;
+    g_output_stream_splice(
+            z_out, in,
+            G_OUTPUT_STREAM_SPLICE_CLOSE_SOURCE|G_OUTPUT_STREAM_SPLICE_CLOSE_TARGET,
+            NULL,
+            &error);
+
+    if (error != NULL)
+    {
+        g_error("Error while splicing: %s", error->message);
+        return;
+    }
+
+    gpointer result = g_memory_output_stream_get_data(G_MEMORY_OUTPUT_STREAM(out));
+    crc32_t checksum = sooshi_crc32_calculate(state, result, g_memory_output_stream_get_data_size(G_MEMORY_OUTPUT_STREAM(out)));
+    g_info("Tree-CRC: %x", checksum);
+    state->root_node = sooshi_parse_node(state, NULL, result, NULL);
+
+    sooshi_debug_dump_tree(state->root_node, (guint)0);
+
+    SooshiNode *crc_node = sooshi_node_find(state, "ADMIN:CRC32", NULL);
+
+    if (crc_node)
+    {
+        sooshi_node_set_value(state, crc_node, (gpointer) checksum); 
+    }
+
+    g_output_stream_close(out, NULL, NULL);
+    g_output_stream_close(z_out, NULL, NULL);
+    g_input_stream_close(in, NULL, NULL);
+
+    g_object_unref(out);
+    g_object_unref(z_out);
+    g_object_unref(decompressor);
+    g_object_unref(in);
 }
 
 guint16 sooshi_convert_to_uint16(guint8 *buffer)
@@ -178,34 +315,6 @@ sooshi_on_object_added_connected(GDBusObjectManager *objman, GDBusObject *obj, g
     {
         g_info("Found serial out!");
         state->serial_out = G_DBUS_PROXY(inter);
-
-        g_info("Starting read routine ...");
-        state->properties_changed_id = g_signal_connect(
-            state->serial_out,
-            "g-properties-changed",
-            G_CALLBACK(sooshi_on_serial_out_ready),
-            state);
-
-        GError *error = NULL;
-        g_dbus_proxy_call_sync(state->serial_out,
-            "StartNotify",
-            NULL,
-            G_DBUS_CALL_FLAGS_NONE,
-            -1,
-            NULL,
-            &error);
-
-        if (error != NULL)
-        {
-            g_error("Error starting read routine: %s", error->message);
-            g_error_free(error);
-            return;
-        }
-
-        GVariant *v_notifying = g_dbus_proxy_get_cached_property(state->serial_out, "Notifying");
-        gboolean notifying = g_variant_get_boolean(v_notifying);
-        g_info("Notifying enabled on path '%s': %d", g_dbus_proxy_get_object_path(state->serial_out), notifying);
-        g_variant_unref(v_notifying);
     }
 
     g_variant_unref(v_uuid);
@@ -271,6 +380,10 @@ GDBusProxy *sooshi_dbus_find_interface_proxy_if(SooshiState *state, const gchar*
 
     GDBusInterface *found = NULL;
     GList *objects = g_dbus_object_manager_get_objects(state->object_manager);
+
+    if (!objects)
+        return NULL;
+
     GList *l = objects;
     while(l->next)
     {
@@ -305,9 +418,9 @@ gboolean sooshi_find_adapter(SooshiState *state)
 
 gboolean sooshi_cond_is_mooshimeter(GDBusInterface *interface, gpointer user_data)
 {
-    GVariant *uuids = g_dbus_proxy_get_cached_property(G_DBUS_PROXY(interface), "UUIDs");
+    GVariant *v_uuids = g_dbus_proxy_get_cached_property(G_DBUS_PROXY(interface), "UUIDs");
     
-    GVariantIter *iter = g_variant_iter_new (uuids);
+    GVariantIter *iter = g_variant_iter_new(v_uuids);
     gchar* uuid;
     gboolean found = FALSE;
     while (g_variant_iter_loop(iter, "s", &uuid))
@@ -319,9 +432,17 @@ gboolean sooshi_cond_is_mooshimeter(GDBusInterface *interface, gpointer user_dat
             break;
         }
     }
-    g_variant_unref(uuids);
+    g_variant_unref(v_uuids);
 
     return found;
+}
+
+gboolean sooshi_cond_has_uuid(GDBusInterface *interface, gpointer user_data)
+{
+    GVariant *v_uuid = g_dbus_proxy_get_cached_property(G_DBUS_PROXY(interface), "UUID");
+    const gchar *uuid = g_variant_get_string(v_uuid, NULL);
+
+    return (g_ascii_strcasecmp(uuid, (gchar*)user_data) == 0);
 }
 
 gboolean sooshi_find_mooshi(SooshiState *state)
@@ -421,6 +542,21 @@ void sooshi_connect_mooshi(SooshiState *state)
 {
     g_debug("Connecting to Mooshimeter ...");
 
+    // Try to find serial_in/serial_out before connecting ...
+    gchar *uuid_serial_in = METER_SERIAL_IN;
+    state->serial_in = sooshi_dbus_find_interface_proxy_if(
+            state,
+            BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
+            sooshi_cond_has_uuid,
+            (gpointer)uuid_serial_in);
+
+    gchar *uuid_serial_out = METER_SERIAL_OUT;
+    state->serial_out = sooshi_dbus_find_interface_proxy_if(
+            state,
+            BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
+            sooshi_cond_has_uuid,
+            (gpointer)uuid_serial_out);
+
     state->scan_signal_id = g_signal_connect(state->object_manager, 
         "object-added",
         G_CALLBACK(sooshi_on_object_added_connected),
@@ -442,9 +578,10 @@ void sooshi_connect_mooshi(SooshiState *state)
         return;
     }
 
-    g_debug("Done!");
-
     state->connected = TRUE; 
+
+    if (state->serial_in && state->serial_out)
+        sooshi_test(state);
 }
 
 void sooshi_add_mooshimeter(SooshiState *state, GDBusProxy *meter)
@@ -454,21 +591,44 @@ void sooshi_add_mooshimeter(SooshiState *state, GDBusProxy *meter)
     g_info("Added Mooshimeter(Path: %s)", state->mooshimeter_dbus_path);
 }
 
+void sooshi_enable_notify(SooshiState *state)
+{
+    g_return_if_fail(state->serial_out);
+
+    state->properties_changed_id = g_signal_connect(
+        state->serial_out,
+        "g-properties-changed",
+        G_CALLBACK(sooshi_on_serial_out_ready),
+        state);
+
+    GError *error = NULL;
+    g_dbus_proxy_call_sync(state->serial_out,
+        "StartNotify",
+        NULL,
+        G_DBUS_CALL_FLAGS_NONE,
+        -1,
+        NULL,
+        &error);
+
+    if (error != NULL)
+    {
+        g_error("Error starting read routine: %s", error->message);
+        g_error_free(error);
+        return;
+    }
+}
+
 void sooshi_test(SooshiState *state)
 {
-    GVariantBuilder *b;
-    GVariant *string, *dict, *final;
+    sooshi_enable_notify(state);
 
-    const gchar* tmp = "ADMIN:TREE";
+    GVariantBuilder *b;
+    GVariant *final;
+
     b = g_variant_builder_new(G_VARIANT_TYPE("(aya{sv})"));
     g_variant_builder_open(b, G_VARIANT_TYPE("ay"));
     g_variant_builder_add(b, "y", (guchar)0);
     g_variant_builder_add(b, "y", (guchar)1);
-    /*while(*tmp)
-    {
-        g_variant_builder_add(b, "y", (guchar)*tmp);
-        tmp++;
-    }*/
     g_variant_builder_close(b);
 
     g_variant_builder_open(b, G_VARIANT_TYPE("a{sv}"));
