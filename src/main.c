@@ -2,9 +2,31 @@
 
 #include "sooshi.h"
 
-void handler(SooshiState *state)
+void battery_update(SooshiState *state, SooshiNode *node)
 {
+    float voltage = g_variant_get_double(node->value);
+    printf("Battery Percent: %.2f\n", (voltage - 2.0) * 100.0);
+}
 
+void channel1_update(SooshiState *state, SooshiNode *node)
+{
+    //printf("Channel 1: %.2f\n", g_variant_get_double(node->value));
+}
+
+void channel2_update(SooshiState *state, SooshiNode *node)
+{
+    printf("Channel 2: %.2f\n", g_variant_get_double(node->value));
+}
+
+
+void mooshi_initialized(SooshiState *state)
+{
+    sooshi_node_subscribe(state, sooshi_node_find(state, "BAT_V", NULL), battery_update);
+    sooshi_node_subscribe(state, sooshi_node_find(state, "CH1:VALUE", NULL), channel1_update);
+    sooshi_node_subscribe(state, sooshi_node_find(state, "CH2:VALUE", NULL), channel2_update);
+
+    sooshi_node_choose(state, sooshi_node_find(state, "SAMPLING:TRIGGER:CONTINUOUS", NULL));
+    sooshi_node_choose(state, sooshi_node_find(state, "CH2:MAPPING:VOLTAGE:60", NULL));
 }
 
 int main()
@@ -13,36 +35,7 @@ int main()
 
     SooshiState *state;
     state = sooshi_state_new();
-
-    // Let's see if the Mooshimeter has already been scanned
-    if (!sooshi_find_mooshi(state))
-    {
-        g_warning("Could not find Mooshimeter!");
-
-        // We couldn't find it, let's scan
-        if (!sooshi_find_adapter(state))
-        {
-            g_warning("Could not find bluetooth adapter!");
-            sooshi_state_delete(state);
-            return -1;
-        }
-
-        g_info("Found bluetooth adapter, ready to scan!");
-
-        if (!sooshi_start_scan(state))
-        {
-            g_warning("Error starting bluetooth scan!");
-            sooshi_state_delete(state);
-            return -1;
-        }
-    }
-    else
-        sooshi_connect_mooshi(state);
-
-    sooshi_start(state, handler);
-
-    sooshi_test(state);
-    
+    sooshi_run(state, mooshi_initialized);
     sooshi_state_delete(state);
 
     return 0;

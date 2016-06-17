@@ -1,9 +1,30 @@
 #include <stdio.h>
 #include <zlib.h>
 #include <string.h>
+#include <glib.h>
+#include <glib/gprintf.h>
+
 #include "sooshistate.h"
 
 G_DEFINE_TYPE(SooshiState, sooshi_state, G_TYPE_OBJECT)
+
+const gchar *const SOOSHI_NODE_TYPE_STR[] =
+{
+    "NOTSET",
+    "PLAIN",
+    "LINK",
+    "CHOOSER",
+    "VAL_U8",
+    "VAL_U16",
+    "VAL_U32",
+    "VAL_S8",
+    "VAL_S16",
+    "VAL_S32",
+    "VAL_STR",
+    "VAL_BIN",
+    "VAL_FLT"
+};
+
 
 static void sooshi_state_class_init(SooshiStateClass *class)
 {
@@ -22,6 +43,10 @@ static void sooshi_state_init(SooshiState *state)
             0);
 
     state->buffer = g_byte_array_new();
+    state->send_sequence = 0;
+    state->recv_sequence = 0;
+
+    state->op_code_map = g_array_new(FALSE, FALSE, sizeof(SooshiNode*));
 
     sooshi_crc32_init(state);
 }
@@ -31,6 +56,7 @@ sooshi_on_object_added(GDBusObjectManager *objman, GDBusObject *obj, gpointer us
 {
     SooshiState *state = (SooshiState*)user_data;
 
+    g_info("Found device %s ...", g_dbus_object_get_object_path(obj));
     GDBusInterface *inter = g_dbus_object_get_interface(obj, BLUEZ_DEVICE_INTERFACE);
 
     if (!inter)
@@ -42,15 +68,9 @@ sooshi_on_object_added(GDBusObjectManager *objman, GDBusObject *obj, gpointer us
     const gchar *uuid = METER_SERVICE_UUID;
     if (sooshi_cond_is_mooshimeter(inter, (gpointer)uuid))
     {
-        g_mutex_lock(&state->mooshimeter_mutex);
         sooshi_add_mooshimeter(state, G_DBUS_PROXY(inter));
-        g_cond_signal(&state->mooshimeter_found);
-        g_mutex_unlock(&state->mooshimeter_mutex);
-
         g_info("Found device '%s', looks like a Mooshimeter!", name);
-
         sooshi_stop_scan(state);
-
         sooshi_connect_mooshi(state);
     }
     else
@@ -77,7 +97,7 @@ sooshi_on_serial_out_ready(GDBusProxy *proxy, GVariant *changed_properties, GStr
     {
         //g_info("Just read: %d", g_variant_get_byte(value));
 
-        g_info("Reading value ...");
+        g_debug("Reading value ...");
         GVariantIter *iter = g_variant_iter_new(value);
         guint8 buf[20];
         gchar tmp;
@@ -85,11 +105,11 @@ sooshi_on_serial_out_ready(GDBusProxy *proxy, GVariant *changed_properties, GStr
         while (g_variant_iter_loop(iter, "y", &tmp))
         {
             if (i == 0)
-                g_info("Message Sequence: %d", tmp);
+                g_debug("Message Sequence: %d", tmp);
             else
             {
                 buf[i-1] = tmp;
-                g_info("    [%d:%d] %x (%c, %d)", i, state->buffer->len + (i - 1), buf[i-1], buf[i-1], buf[i-1]);
+                g_debug("    [%d:%d] %x (%c, %d)", i, state->buffer->len + (i - 1), buf[i-1], buf[i-1], buf[i-1]);
             }
             i++;
         }
@@ -97,9 +117,6 @@ sooshi_on_serial_out_ready(GDBusProxy *proxy, GVariant *changed_properties, GStr
 
         g_byte_array_append(state->buffer, buf, i - 1);
         sooshi_parse_response(state);
-
-        //guint pcb_v = sooshi_convert_to_int24(buf);
-        //g_info("PCB_VERSION: %d", pcb_v);
     }
 
     g_variant_dict_unref(dict);
@@ -110,27 +127,83 @@ void sooshi_parse_response(SooshiState *state)
     guint8 op_code = state->buffer->data[0];
     guint16 length = 0;
 
-    switch(op_code)
+    if (op_code == 1)
     {
-        case 1:
-            length = sooshi_convert_to_uint16(state->buffer->data + 1);
+        length = sooshi_convert_to_uint16(state->buffer->data + 1);
 
-            // Did we receive the full tree yet?
-            if (state->buffer->len - 1 < length)
-                return;
+        // Did we receive the full tree yet?
+        if (state->buffer->len - 1 < length)
+            return;
 
-            g_debug("Size of tree: %d", length);
-            sooshi_parse_admin_tree(state, length, state->buffer->data + 3);
-
-            break;
-        default:
-            g_warning("Unknown opcode: %u", op_code);
+        g_debug("Size of tree: %d", length);
+        sooshi_parse_admin_tree(state, length, state->buffer->data + 3);
+        state->buffer = g_byte_array_remove_range(state->buffer, 0, length + 3);
     }
+    else
+    {
+        if (op_code >= state->op_code_map->len)
+        {
+            g_warning("Unknown opcode: %u", op_code);
+            return;
+        }
+
+        SooshiNode *node = g_array_index(state->op_code_map, SooshiNode*, op_code);
+
+        GVariant *v = sooshi_node_bytes_to_value(node, state->buffer);
+
+        // bytes_to_value might return null if there's not enough data here
+        // yet to fully parse a string
+        if (v == NULL)
+            return;
+
+        sooshi_node_set_value(state, node, v, FALSE);
+
+        g_info("Value for node '%s' updated: [%s]", node->name, sooshi_node_value_as_string(node));
+        sooshi_node_notify_subscriber(state, node);
+
+        // We have set and received back the CRC32 checksum of the tree - setup is finished
+        if (node->op_code == 0)
+        {
+            sooshi_request_all_node_values(state, NULL);
+            g_timeout_add_seconds(10, sooshi_heartbeat, (gpointer) state);
+            state->init_handler(state);
+        }
+    }
+}
+
+gchar *sooshi_node_value_as_string(SooshiNode *node)
+{
+    if (node->value)
+    {
+        switch (node->type)
+        {
+            case CHOOSER: return g_strdup_printf("%u", g_variant_get_byte(node->value));
+            case VAL_U8:  return g_strdup_printf("%u", g_variant_get_byte(node->value));
+            case VAL_U16: return g_strdup_printf("%u", g_variant_get_uint16(node->value));
+            case VAL_U32: return g_strdup_printf("%u", g_variant_get_uint32(node->value));
+            case VAL_S8:  return g_strdup_printf("%d", g_variant_get_byte(node->value));
+            case VAL_S16: return g_strdup_printf("%d", g_variant_get_int16(node->value));
+            case VAL_S32: return g_strdup_printf("%d", g_variant_get_int32(node->value));
+            case VAL_STR: return g_strdup_printf("'%s'", g_variant_get_string(node->value, NULL));
+            case VAL_FLT: return g_strdup_printf("%f", g_variant_get_double(node->value));
+            default: break;
+        }
+    }
+
+    return g_strdup("");
 }
 
 void sooshi_debug_dump_tree(SooshiNode *node, gint indent)
 {
-    printf("%*s (%d, %d children)\n", (gint)(indent + strlen(node->name)), node->name, node->type, g_list_length(node->children));
+    gchar *node_value = sooshi_node_value_as_string(node);
+
+    g_printf("%*s %d [%s] %s\n",
+            (gint)(indent + strlen(node->name)), node->name,
+            node->op_code,
+            SOOSHI_NODE_TYPE_TO_STR(node->type),
+            node_value);
+
+    g_free(node_value);
 
     GList *elem;
     SooshiNode *item;
@@ -146,18 +219,19 @@ SooshiNode *sooshi_node_find(SooshiState *state, gchar *path, SooshiNode *start)
     if (!start)
        start = state->root_node; 
     
-    gchar *sep = g_strstr_length(path, -1, ":");
+    gchar *sep = g_strstr_len(path, -1, ":");
+    gulong node_name_len = strlen(path);
 
     if (sep)
-        *sep = '0';
+        node_name_len = sep - path;
 
     GList *elem;
     SooshiNode *item;
-    for(elem = node->children; elem; elem = elem->next)
+    for(elem = start->children; elem; elem = elem->next)
     {
         item = elem->data;
 
-        if (g_strcmp0(path, item->name) == 0)
+        if (strncmp(path, item->name, node_name_len) == 0)
         {
             if (sep == NULL)
                 return item;
@@ -165,45 +239,387 @@ SooshiNode *sooshi_node_find(SooshiState *state, gchar *path, SooshiNode *start)
                 return sooshi_node_find(state, sep + 1, item);
         }
     }
+
+    return NULL;
 }
 
-void sooshi_node_set_value(SooshiState *state, SooshiNode *node, gpointer value)
+void sooshi_node_set_value(SooshiState *state, SooshiNode *node, GVariant *value, gboolean send_update)
 {
     g_return_if_fail(state != NULL);
     g_return_if_fail(node != NULL);
 
+    if (node->value)
+    {
+        g_variant_unref(node->value);
+        node->value = NULL;
+    }
+
     switch(node->type)
     {
         case VAL_U8:
-            node->value = g_variant_new_byte((guchar) value);
+        case CHOOSER:
+            if (!g_variant_is_of_type(value, G_VARIANT_TYPE_BYTE))
+            {
+                g_error("Wrong datatype for node '%s', expected byte, got %s", node->name, g_variant_get_type_string(value));
+                return;
+            }
+
+            node->value = value;
             break;
+
         case VAL_U16:
-            node->value = g_variant_new_uint16((guint16)value);
+            if (!g_variant_is_of_type(value, G_VARIANT_TYPE_UINT16))
+            {
+                g_error("Wrong datatype for node '%s', expected uint16, got %s", node->name, g_variant_get_type_string(value));
+                return;
+            }
+
+            node->value = value;
             break;
+
         case VAL_U32:
-            node->value = g_variant_new_uint32((guint32)value);
+            if (!g_variant_is_of_type(value, G_VARIANT_TYPE_UINT32))
+            {
+                g_error("Wrong datatype for node '%s', expected uint32, got %s", node->name, g_variant_get_type_string(value));
+                return;
+            }
+
+            node->value = value;
             break;
+
         case VAL_S8:
-            node->value = g_variant_new_byte((gint8)value);
+            if (!g_variant_is_of_type(value, G_VARIANT_TYPE_BYTE))
+            {
+                g_error("Wrong datatype for node '%s', expected byte, got %s", node->name, g_variant_get_type_string(value));
+                return;
+            }
+
+            node->value = value;
             break;
+
         case VAL_S16:
-            node->value = g_variant_new_int16((gint16)value);
+            if (!g_variant_is_of_type(value, G_VARIANT_TYPE_INT16))
+            {
+                g_error("Wrong datatype for node '%s', expected int16, got %s", node->name, g_variant_get_type_string(value));
+                return;
+            }
+
+            node->value = value;
             break;
+
         case VAL_S32:
-            node->value = g_variant_new_int32((gint32)value);
+            if (!g_variant_is_of_type(value, G_VARIANT_TYPE_INT32))
+            {
+                g_error("Wrong datatype for node '%s', expected int32, got %s", node->name, g_variant_get_type_string(value));
+                return;
+            }
+
+            node->value = value;
+            break;
+
+        case VAL_STR:
+            if (!g_variant_is_of_type(value, G_VARIANT_TYPE_STRING))
+            {
+                g_error("Wrong datatype for node '%s', expected string, got %s", node->name, g_variant_get_type_string(value));
+                return;
+            }
+
+            node->value = value;
+            break;
+
+        case VAL_BIN:
+            if (!g_variant_is_of_type(value, G_VARIANT_TYPE_BYTESTRING))
+            {
+                g_error("Wrong datatype for node '%s', expected bytestring, got %s", node->name, g_variant_get_type_string(value));
+                return;
+            }
+
+            node->value = value;
+            break;
+
+        case VAL_FLT:
+            if (!g_variant_is_of_type(value, G_VARIANT_TYPE_DOUBLE))
+            {
+                g_error("Wrong datatype for node '%s', expected double, got %s", node->name, g_variant_get_type_string(value));
+                return;
+            }
+
+            node->value = value;
+            break;
+
+        default:
+            g_error("Unsupported data type in sooshi_node_set_value(): %d", node->type);
+            return;
+    }
+
+    if (send_update)
+        sooshi_node_send_value(state, node);
+}
+
+gint sooshi_node_value_to_bytes(SooshiNode *node, guchar *buffer)
+{
+    gsize len;
+    const gchar* tmp;
+    guint16 u16;
+    guint32 u32;
+    gint16 s16;
+    gint32 s32;
+    float flt;
+
+    switch(node->type)
+    {
+        case VAL_U8:
+        case CHOOSER:
+            buffer[0] = g_variant_get_byte(node->value); return 1;
+
+        case VAL_U16:
+            u16 = g_variant_get_uint16(node->value);
+            memcpy(buffer, (gchar*)&u16, 2); return 2;
+
+        case VAL_U32:
+            u32 = g_variant_get_uint32(node->value);
+            memcpy(buffer, (gchar*)&u32, 4); return 4;
+
+        case VAL_S8:
+            buffer[0] = g_variant_get_byte(node->value); return 1;
+
+        case VAL_S16:
+            s16 = g_variant_get_int16(node->value);
+            memcpy(buffer, (gchar*)&s16, 2); return 2;
+
+        case VAL_S32:
+            s32 = g_variant_get_int32(node->value);
+            memcpy(buffer, (gchar*)&s32, 4); return 4;
+
+        case VAL_STR:
+            tmp = g_variant_get_string(node->value, &len); 
+            memcpy(buffer, tmp, len); return len;
+
+        case VAL_FLT:
+            flt = g_variant_get_double(node->value);
+            memcpy(buffer, (gchar*)&flt, 4); return 4;
+
+        default:
+            g_error("Unsupported data type in sooshi_node_value_to_bytes(): %d", node->type);
             break;
     }
+
+    return 0;
+}
+
+GVariant *sooshi_node_bytes_to_value(SooshiNode *node, GByteArray *buffer)
+{
+    gchar* tmp;
+    guint16 u16;
+    guint32 u32;
+    gint16 s16;
+    gint32 s32;
+    float flt;
+    GVariant *v;
+
+    // buffer->data[0] still contains the op code
+    switch(node->type)
+    {
+        case VAL_U8:
+        case CHOOSER:
+            v = g_variant_new_byte(buffer->data[1]);
+            g_byte_array_remove_range(buffer, 0, 2);
+            return v;
+
+        case VAL_U16:
+            u16 = buffer->data[1] | (guint16)buffer->data[2] << 8;
+            v = g_variant_new_uint16(u16);
+            g_byte_array_remove_range(buffer, 0, 3);
+            return v;
+
+        case VAL_U32:
+            u32 = buffer->data[1] | (guint32)buffer->data[2] << 8
+                | (guint32)buffer->data[3] << 16 | (guint32)buffer->data[4] << 24;
+            v = g_variant_new_uint32(u32);
+            g_byte_array_remove_range(buffer, 0, 5);
+            return v;
+
+        case VAL_S8:
+            v = g_variant_new_byte((gchar)buffer->data[1]);
+            g_byte_array_remove_range(buffer, 0, 2);
+            return v;
+
+        case VAL_S16:
+            s16 = buffer->data[1] | (gint16)buffer->data[2] << 8;
+            v = g_variant_new_int16(s16);
+            g_byte_array_remove_range(buffer, 0, 3);
+            return v;
+
+        case VAL_S32:
+            s32 = buffer->data[1] | (gint32)buffer->data[2] << 8
+                | (gint32)buffer->data[3] << 16 | (gint32)buffer->data[4] << 24;
+            v = g_variant_new_int32(s32);
+            g_byte_array_remove_range(buffer, 0, 5);
+            return v;
+
+        case VAL_STR:
+            u16 = buffer->data[1] | (guint16)buffer->data[2] << 8;
+
+            if (buffer->len < u16)
+                return NULL;
+
+            tmp = g_strndup((gchar*)buffer->data + 3, u16);
+            v = g_variant_new_string(tmp);
+            g_free(tmp);
+            g_byte_array_remove_range(buffer, 0, u16 + 3);
+
+            return v;
+
+        case VAL_BIN:
+            u16 = buffer->data[1] | (guint16)buffer->data[2] << 8;
+
+            if (buffer->len < u16)
+                return NULL;
+
+            tmp = g_strndup((gchar*)buffer->data + 3, u16);
+            v = g_variant_new_bytestring(tmp);
+            g_free(tmp);
+            g_byte_array_remove_range(buffer, 0, u16 + 3);
+
+            return v;
+
+        case VAL_FLT:
+            ((guchar*)&flt)[0] = buffer->data[1];
+            ((guchar*)&flt)[1] = buffer->data[2];
+            ((guchar*)&flt)[2] = buffer->data[3];
+            ((guchar*)&flt)[3] = buffer->data[4];
+            v = g_variant_new_double(flt);
+            g_byte_array_remove_range(buffer, 0, 5);
+            return v;
+
+        default:
+            g_error("Unsupported data type in sooshi_node_bytes_to_value(): %d", node->type);
+            return NULL;
+    }
+}
+
+void sooshi_node_request_value(SooshiState *state, SooshiNode *node)
+{
+    sooshi_send_bytes(state, &node->op_code, 1);
+}
+
+void sooshi_node_choose(SooshiState *state, SooshiNode *node)
+{
+    g_return_if_fail(state != NULL);
+    g_return_if_fail(node != NULL);
+    g_return_if_fail(node->parent->type == CHOOSER);
+    gint index = g_list_index(node->parent->children, node);
+
+    sooshi_node_set_value(state, node->parent, g_variant_new_byte((guchar)index), TRUE);
+}
+
+void sooshi_node_subscribe(SooshiState *state, SooshiNode *node, sooshi_node_subscriber_t func)
+{
+    g_info("Subscribing to node '%s'", node->name);
+    node->subscriber = g_list_append(node->subscriber, (gpointer)func);
+}
+
+void sooshi_node_notify_subscriber(SooshiState *state, SooshiNode *node)
+{
+    GList *elem;
+    for(elem = node->subscriber; elem; elem = elem->next)
+        ((sooshi_node_subscriber_t)elem->data)(state, node);
+}
+
+void sooshi_request_all_node_values(SooshiState *state, SooshiNode *start)
+{
+    if (start == NULL)
+        start = state->root_node;
+
+    // Only request nodes that can have a value and don't request the ADMIN nodes again
+    if (start->has_value == TRUE && start->op_code >= 3)
+        sooshi_node_request_value(state, start);
+
+    GList *elem;
+    SooshiNode *item;
+    for(elem = start->children; elem; elem = elem->next)
+    {
+        item = elem->data;
+        sooshi_request_all_node_values(state, item);
+    }
+}
+
+void sooshi_send_bytes(SooshiState *state, guchar *buffer, gsize len)
+{
+    GVariantBuilder *b;
+    GVariant *final;
+
+    b = g_variant_builder_new(G_VARIANT_TYPE("(aya{sv})"));
+    g_variant_builder_open(b, G_VARIANT_TYPE("ay"));
+
+    g_debug("Sending message #%d to Mooshimeter:", state->send_sequence);
+    g_variant_builder_add(b, "y", (guchar)state->send_sequence++);
+    for (guint i = 0; i < len; ++i)
+    {
+        g_debug("    [%d] %x (%c %d)", i, buffer[i], buffer[i], buffer[i]);
+        g_variant_builder_add(b, "y", buffer[i]);
+    }
+
+    g_variant_builder_close(b);
+
+    g_variant_builder_open(b, G_VARIANT_TYPE("a{sv}"));
+    g_variant_builder_add(b, "{sv}", "offset", g_variant_new_int16(0));
+    g_variant_builder_close(b);
+    final = g_variant_builder_end(b);
+
+    GError *error = NULL;
+    g_dbus_proxy_call_sync(state->serial_in,
+        "WriteValue",
+        final,
+        G_DBUS_CALL_FLAGS_NONE,
+        -1,
+        NULL,
+        &error);
+
+    if (error != NULL)
+    {
+        g_error("Error calling WriteValue: %s", error->message);
+        g_error_free(error);
+        return;
+    }
+}
+
+void sooshi_node_send_value(SooshiState *state, SooshiNode *node)
+{
+    static guchar buffer[20] = {0};
+    buffer[0] = node->op_code | 0x80;
+    gint len = 1;
+    len += sooshi_node_value_to_bytes(node, buffer + 1);
+
+    if (len >= 20)
+    {
+        g_warning("Message is larger than 20 bytes!");
+        len = 20;
+    }
+
+    sooshi_send_bytes(state, buffer, len);
 }
 
 static
 SooshiNode *sooshi_parse_node(SooshiState *state, SooshiNode *parent, const guint8 *buffer, gulong *bytes_read)
 {
+    static guchar opcode  = 0;
+
     SooshiNode *node = g_new0(SooshiNode, 1);
     
     node->parent = parent;
     node->type = (SOOSHI_NODE_TYPE)buffer[0];
-    guchar name_len = buffer[1];
+    node->value = NULL;
+    node->op_code = 0;
+    node->has_value = FALSE;
+    if (node->type >= CHOOSER)
+    {
+        node->op_code = opcode++;
+        g_array_append_val(state->op_code_map, node);
+        node->has_value = TRUE;
+    }
 
+    guchar name_len = buffer[1];
     if (name_len)
         node->name = g_strndup((const gchar*)buffer + 2, name_len);
     else
@@ -249,7 +665,8 @@ void sooshi_parse_admin_tree(SooshiState *state, gulong compressed_size, const g
     }
 
     gpointer result = g_memory_output_stream_get_data(G_MEMORY_OUTPUT_STREAM(out));
-    crc32_t checksum = sooshi_crc32_calculate(state, result, g_memory_output_stream_get_data_size(G_MEMORY_OUTPUT_STREAM(out)));
+
+    crc32_t checksum = sooshi_crc32_calculate(state, buffer, compressed_size);
     g_info("Tree-CRC: %x", checksum);
     state->root_node = sooshi_parse_node(state, NULL, result, NULL);
 
@@ -258,9 +675,9 @@ void sooshi_parse_admin_tree(SooshiState *state, gulong compressed_size, const g
     SooshiNode *crc_node = sooshi_node_find(state, "ADMIN:CRC32", NULL);
 
     if (crc_node)
-    {
-        sooshi_node_set_value(state, crc_node, (gpointer) checksum); 
-    }
+        sooshi_node_set_value(state, crc_node, g_variant_new_uint32(checksum), TRUE);
+    else
+        g_error("Error finding node ADMIN:CRC32!");
 
     g_output_stream_close(out, NULL, NULL);
     g_output_stream_close(z_out, NULL, NULL);
@@ -320,7 +737,7 @@ sooshi_on_object_added_connected(GDBusObjectManager *objman, GDBusObject *obj, g
     g_variant_unref(v_uuid);
 
     if (state->serial_in && state->serial_out)
-        sooshi_test(state);
+        sooshi_initialize_mooshi(state);
 }
 
 
@@ -486,6 +903,8 @@ gboolean sooshi_start_scan(SooshiState *state)
         return FALSE;
     }
 
+    g_info("Started bluetooth scan ...");
+
     return TRUE;
 }
 
@@ -511,31 +930,6 @@ gboolean sooshi_stop_scan(SooshiState *state)
     }
 
     return TRUE;
-}
-
-void sooshi_wait_until_mooshimeter_found(SooshiState *state, gint64 timeout)
-{
-    gint64 end_time;
-    end_time = g_get_monotonic_time () + timeout * G_TIME_SPAN_SECOND;
-
-    g_mutex_lock(&state->mooshimeter_mutex); 
-
-    while (!state->mooshimeter)
-    {
-        if (timeout > 0)
-            g_cond_wait_until(&state->mooshimeter_found, &state->mooshimeter_mutex, end_time);
-        else
-            g_cond_wait(&state->mooshimeter_found, &state->mooshimeter_mutex);
-    }
-
-    g_mutex_unlock(&state->mooshimeter_mutex);
-}
-
-void sooshi_start(SooshiState *state, sooshi_run_handler handler)
-{
-    g_debug("Starting main loop ...");
-    state->loop = g_main_loop_new (NULL, FALSE);
-    g_main_loop_run(state->loop);
 }
 
 void sooshi_connect_mooshi(SooshiState *state)
@@ -578,10 +972,8 @@ void sooshi_connect_mooshi(SooshiState *state)
         return;
     }
 
-    state->connected = TRUE; 
-
     if (state->serial_in && state->serial_out)
-        sooshi_test(state);
+        sooshi_initialize_mooshi(state);
 }
 
 void sooshi_add_mooshimeter(SooshiState *state, GDBusProxy *meter)
@@ -618,33 +1010,17 @@ void sooshi_enable_notify(SooshiState *state)
     }
 }
 
-void sooshi_test(SooshiState *state)
+void sooshi_disable_notify(SooshiState *state)
 {
-    sooshi_enable_notify(state);
+    g_return_if_fail(state->serial_out);
 
-    GVariantBuilder *b;
-    GVariant *final;
-
-    b = g_variant_builder_new(G_VARIANT_TYPE("(aya{sv})"));
-    g_variant_builder_open(b, G_VARIANT_TYPE("ay"));
-    g_variant_builder_add(b, "y", (guchar)0);
-    g_variant_builder_add(b, "y", (guchar)1);
-    g_variant_builder_close(b);
-
-    g_variant_builder_open(b, G_VARIANT_TYPE("a{sv}"));
-    g_variant_builder_add(b, "{sv}", "offset", g_variant_new_int16(0));
-    g_variant_builder_close(b);
-    final = g_variant_builder_end(b);
-
-    GVariant *v_name = g_dbus_proxy_get_cached_property(state->mooshimeter, "Connected");
-    gboolean connected = g_variant_get_boolean(v_name);
-
-    g_info("Mooshimeter still connected: %d", connected);
+    g_signal_handler_disconnect(state->serial_out, state->properties_changed_id);
+    state->properties_changed_id = 0;
 
     GError *error = NULL;
-    g_dbus_proxy_call_sync(state->serial_in,
-        "WriteValue",
-        final,
+    g_dbus_proxy_call_sync(state->serial_out,
+        "StopNotify",
+        NULL,
         G_DBUS_CALL_FLAGS_NONE,
         -1,
         NULL,
@@ -652,8 +1028,59 @@ void sooshi_test(SooshiState *state)
 
     if (error != NULL)
     {
-        g_error("Error calling WriteValue: %s", error->message);
+        g_error("Error stopping read routine: %s", error->message);
         g_error_free(error);
         return;
     }
+}
+
+void sooshi_initialize_mooshi(SooshiState *state)
+{
+    sooshi_enable_notify(state);
+
+    guchar op_code = 1;
+    sooshi_send_bytes(state, &op_code, 1);
+}
+
+gboolean sooshi_heartbeat(gpointer user_data)
+{
+    SooshiState *state = SOOSHI_STATE(user_data);
+    SooshiNode *node = sooshi_node_find(state, "PCB_VERSION", NULL);
+
+    sooshi_node_request_value(state, node);
+    return TRUE;
+}
+
+void sooshi_run(SooshiState *state, sooshi_initialized_handler_t init_handler)
+{
+    state->init_handler = init_handler;
+
+    if (!sooshi_find_mooshi(state))
+    {
+        g_warning("Could not find Mooshimeter!");
+
+        // We couldn't find it, let's scan
+        if (!sooshi_find_adapter(state))
+        {
+            g_warning("Could not find bluetooth adapter!");
+            sooshi_state_delete(state);
+            return;
+        }
+
+        g_info("Found bluetooth adapter, ready to scan!");
+
+        if (!sooshi_start_scan(state))
+        {
+            g_warning("Error starting bluetooth scan!");
+            sooshi_state_delete(state);
+            return;
+        }
+    }
+    else
+        sooshi_connect_mooshi(state);
+
+    g_debug("Starting main loop ...");
+    state->loop = g_main_loop_new(NULL, FALSE);
+
+    g_main_loop_run(state->loop);
 }
