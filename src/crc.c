@@ -1,7 +1,7 @@
 // This code has been inspired by
 // http://www.barrgroup.com/Embedded-Systems/How-To/CRC-Calculation-C-Code
 
-#include "sooshistate.h"
+#include "sooshi.h"
 
 static guint32 reflect(guint32 data, guint32 nBits)
 {

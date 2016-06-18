@@ -5,23 +5,26 @@ LD := $(CC)
 GLIB_CFLAGS  := $(shell pkg-config --cflags glib-2.0 gobject-2.0 gio-2.0)
 GLIB_LDFLAGS := $(shell pkg-config --libs glib-2.0 gobject-2.0 gio-2.0)
 
-CFLAGS  := -fvisibility=hidden -fPIC -Wall -g $(GLIB_CFLAGS) -DG_LOG_DOMAIN=\"sooshi\" -DSOOSHI_DLL -DSOOSHI_DLL_EXPORTS
-LDFLAGS := $(GLIB_LDFLAGS)
+CFLAGS  := -Wall -g $(GLIB_CFLAGS) -I../src/
+LDFLAGS := $(GLIB_LDFLAGS) -L../ -lsooshi
 
-TARGET  := libsooshi.so
-SOURCES := $(wildcard src/*.c)
+TARGET  := test
+SOURCES := $(wildcard *.c)
 OBJECTS := $(SOURCES:.c=.o)
 
 all: $(TARGET)
 
 $(TARGET): $(OBJECTS)
-	$(LD) -shared -o $@ $^ $(LDFLAGS)
+	$(LD) -o $@ $^ $(LDFLAGS)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $^ -o $@
 
 run: $(TARGET)
-	G_MESSAGES_DEBUG=all ./$(TARGET)
+	LD_LIBRARY_PATH=../ G_MESSAGES_DEBUG=all ./$(TARGET)
+
+gdb: $(TARGET)
+	LD_LIBRARY_PATH=../ G_MESSAGES_DEBUG=all gdb $(TARGET)
 
 clean:
 	rm $(TARGET) $(OBJECTS)

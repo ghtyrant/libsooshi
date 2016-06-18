@@ -15,7 +15,7 @@ void channel1_update(SooshiState *state, SooshiNode *node)
 
 void channel2_update(SooshiState *state, SooshiNode *node)
 {
-    printf("Channel 2: %.2f\n", g_variant_get_double(node->value));
+    printf("Channel 2: %f\n", g_variant_get_double(node->value));
 }
 
 
