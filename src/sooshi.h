@@ -93,7 +93,7 @@ struct _SooshiNode
 typedef struct _SooshiState SooshiState;
 typedef struct _SooshiStateClass SooshiStateClass;
 
-typedef void (*sooshi_initialized_handler_t)(SooshiState *state);
+typedef void (*sooshi_initialized_handler_t)(SooshiState *state, gpointer user_data);
 
 struct _SooshiState
 {
@@ -112,10 +112,12 @@ struct _SooshiState
     // Signals
     gulong properties_changed_id;
     gulong scan_signal_id;
+    guint heartbeat_source_id;
 
     gboolean scanning;
     gboolean listening;
     gboolean connected;
+    gboolean initialized;
 
     GMainLoop *loop;
 
@@ -133,6 +135,19 @@ struct _SooshiState
 
     // This will me called once the mooshimeter is initialized
     sooshi_initialized_handler_t init_handler;
+    gpointer init_handler_data;
+};
+
+typedef gboolean (*dbus_conditional_func_t)(GDBusInterface* interface, gpointer user_data);
+typedef void (*sooshi_node_subscriber_handler_t)(SooshiState *state, SooshiNode *node, gpointer user_data);
+
+/* Subscriber Info */
+typedef struct _SooshiNodeSubscriber SooshiNodeSubscriber;
+struct _SooshiNodeSubscriber
+{
+    guint id;
+    sooshi_node_subscriber_handler_t handler;
+    gpointer user_data;
 };
 
 struct _SooshiStateClass
@@ -149,15 +164,14 @@ GType sooshi_state_get_type();
 #define SOOSHI_IS_STATE_CLASS(_class)       (G_TYPE_CHECK_CLASS_TYPE ((_class), SOOSHI_TYPE_STATE))
 #define SOOSHI_STATE_GET_CLASS(obj)         (G_TYPE_INSTANCE_GET_CLASS ((obj), SOOSHI_TYPE_STATE, SooshiStateClass))
 
-typedef gboolean (*dbus_conditional_func_t)(GDBusInterface* interface, gpointer user_data);
-typedef void (*sooshi_node_subscriber_t)(SooshiState *state, SooshiNode *node);
-
 /*****************/
 /* API functions */
 /*****************/
 SOOSHI_API SooshiState *sooshi_state_new();
 SOOSHI_API void sooshi_state_delete(SooshiState *state);
-SOOSHI_API void sooshi_run(SooshiState *state, sooshi_initialized_handler_t init_handler);
+SOOSHI_API void sooshi_setup(SooshiState *state, sooshi_initialized_handler_t init_handler, gpointer user_data);
+SOOSHI_API void sooshi_run(SooshiState *state);
+SOOSHI_API void sooshi_stop(SooshiState *state);
 
 // Debugging
 SOOSHI_API void sooshi_debug_dump_tree(SooshiNode *node, gint indent);
@@ -167,8 +181,8 @@ SOOSHI_API SooshiNode *sooshi_node_find(SooshiState *state, gchar *path, SooshiN
 SOOSHI_API void sooshi_node_set_value(SooshiState *state, SooshiNode *node, GVariant *value, gboolean send_update);
 SOOSHI_API void sooshi_node_request_value(SooshiState *state, SooshiNode *node);
 SOOSHI_API void sooshi_node_choose(SooshiState *state, SooshiNode *node);
-SOOSHI_API void sooshi_node_subscribe(SooshiState *state, SooshiNode *node, sooshi_node_subscriber_t func);
-SOOSHI_API void sooshi_node_notify_subscriber(SooshiState *state, SooshiNode *node);
+SOOSHI_API guint sooshi_node_subscribe(SooshiState *state, SooshiNode *node, sooshi_node_subscriber_handler_t func, gpointer user_data);
+SOOSHI_API void sooshi_node_notify_subscribers(SooshiState *state, SooshiNode *node);
 
 /*******************/
 /* Local functions */
@@ -177,7 +191,7 @@ SOOSHI_LOCAL GDBusProxy *sooshi_dbus_find_interface_proxy_if(SooshiState *state,
 SOOSHI_LOCAL void sooshi_on_mooshi_initialized(SooshiState *state);
 SOOSHI_LOCAL void sooshi_parse_response(SooshiState *state);
 SOOSHI_LOCAL void sooshi_enable_notify(SooshiState *state);
-SOOSHI_LOCAL void sooshi_send_bytes(SooshiState *state, guchar *buffer, gsize len);
+SOOSHI_LOCAL void sooshi_send_bytes(SooshiState *state, guchar *buffer, gsize len, gboolean block);
 SOOSHI_LOCAL void sooshi_request_all_node_values(SooshiState *state, SooshiNode *start);
 
 // Debugging

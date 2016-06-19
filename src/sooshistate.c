@@ -55,13 +55,12 @@ static gboolean sooshi_heartbeat(gpointer user_data);
 void
 sooshi_on_mooshi_initialized(SooshiState *state)
 {
-    sooshi_request_all_node_values(state, NULL);
-    g_timeout_add_seconds(10, sooshi_heartbeat, (gpointer) state);
-    state->init_handler(state);
+    state->heartbeat_source_id = g_timeout_add_seconds(10, sooshi_heartbeat, (gpointer) state);
+    state->init_handler(state, state->init_handler_data);
 }
 
 void
-sooshi_send_bytes(SooshiState *state, guchar *buffer, gsize len)
+sooshi_send_bytes(SooshiState *state, guchar *buffer, gsize len, gboolean block)
 {
     GVariantBuilder *b;
     GVariant *final;
@@ -84,20 +83,34 @@ sooshi_send_bytes(SooshiState *state, guchar *buffer, gsize len)
     g_variant_builder_close(b);
     final = g_variant_builder_end(b);
 
-    GError *error = NULL;
-    g_dbus_proxy_call_sync(state->serial_in,
-        "WriteValue",
-        final,
-        G_DBUS_CALL_FLAGS_NONE,
-        -1,
-        NULL,
-        &error);
-
-    if (error != NULL)
+    if (block == TRUE)
     {
-        g_error("Error calling WriteValue: %s", error->message);
-        g_error_free(error);
-        return;
+        GError *error = NULL;
+        g_dbus_proxy_call_sync(state->serial_in,
+            "WriteValue",
+            final,
+            G_DBUS_CALL_FLAGS_NONE,
+            -1,
+            NULL,
+            &error);
+
+        if (error != NULL)
+        {
+            g_error("Error calling WriteValue: %s", error->message);
+            g_error_free(error);
+            return;
+        }
+    }
+    else
+    {
+        g_dbus_proxy_call(state->serial_in,
+            "WriteValue",
+            final,
+            G_DBUS_CALL_FLAGS_NONE,
+            -1,
+            NULL,
+            NULL,
+            NULL);
     }
 }
 
@@ -115,7 +128,7 @@ sooshi_node_send_value(SooshiState *state, SooshiNode *node)
         len = 20;
     }
 
-    sooshi_send_bytes(state, buffer, len);
+    sooshi_send_bytes(state, buffer, len, FALSE);
 }
 
 SooshiState *
@@ -196,10 +209,10 @@ sooshi_dbus_find_interface_proxy_if(SooshiState *state, const gchar* interface_n
     return found ? G_DBUS_PROXY(found) : NULL;
 }
 
-void
-sooshi_run(SooshiState *state, sooshi_initialized_handler_t init_handler)
+void sooshi_setup(SooshiState *state, sooshi_initialized_handler_t init_handler, gpointer user_data)
 {
     state->init_handler = init_handler;
+    state->init_handler_data = user_data;
 
     if (!sooshi_find_mooshi(state))
     {
@@ -222,11 +235,20 @@ sooshi_run(SooshiState *state, sooshi_initialized_handler_t init_handler)
     }
     else
         sooshi_connect_mooshi(state);
+}
 
+void
+sooshi_run(SooshiState *state)
+{
     g_debug("Starting main loop ...");
     state->loop = g_main_loop_new(NULL, FALSE);
-
     g_main_loop_run(state->loop);
+}
+
+SOOSHI_API void sooshi_stop(SooshiState *state)
+{
+    g_debug("Starting main loop ...");
+    g_main_loop_quit(state->loop);
 }
 
 /* Static function definitions */
@@ -245,6 +267,9 @@ sooshi_state_dispose(GObject *object)
 {
     SooshiState *state = SOOSHI_STATE(object);
 
+    // Stop heartbeat source
+    g_source_remove(state->heartbeat_source_id);
+
     if (state->listening == TRUE)
         sooshi_stop_listening_to_mooshi(state);
 
@@ -259,6 +284,9 @@ sooshi_state_dispose(GObject *object)
     g_clear_object(&state->mooshimeter);
     g_clear_object(&state->serial_in);
     g_clear_object(&state->serial_out);
+
+    if (state->loop) g_main_loop_unref(state->loop);
+    state->loop = NULL;
 
     if (state->buffer) g_byte_array_unref(state->buffer);
     state->buffer = NULL;
@@ -348,7 +376,7 @@ sooshi_initialize_mooshi(SooshiState *state)
     sooshi_start_listening_to_mooshi(state);
 
     guchar op_code = 1;
-    sooshi_send_bytes(state, &op_code, 1);
+    sooshi_send_bytes(state, &op_code, 1, TRUE);
 }
 
 static gboolean
@@ -570,28 +598,26 @@ sooshi_on_serial_out_ready(GDBusProxy *proxy, GVariant *changed_properties, GStr
 
     GVariantDict *dict = g_variant_dict_new(changed_properties);
 
-    if (g_variant_dict_contains(dict, "Value"))
-        g_info("Value has been updated!");
+    if (g_variant_dict_contains(dict, "Value") == FALSE)
+    {
+        g_variant_dict_unref(dict);
+        return;
+    }
 
     GVariant *value = g_variant_dict_lookup_value(dict, "Value", G_VARIANT_TYPE("ay"));
 
     if (value)
     {
-        //g_info("Just read: %d", g_variant_get_byte(value));
-
-        g_debug("Reading value ...");
         GVariantIter *iter = g_variant_iter_new(value);
         guint8 buf[20];
         gchar tmp;
         gint i = 0;
         while (g_variant_iter_loop(iter, "y", &tmp))
         {
-            if (i == 0)
-                g_debug("Message Sequence: %d", tmp);
-            else
+            if (i >= 1)
             {
                 buf[i-1] = tmp;
-                g_debug("    [%d:%d] %x (%c, %d)", i, state->buffer->len + (i - 1), buf[i-1], buf[i-1], buf[i-1]);
+                //g_debug("    [%d:%d] %x (%c, %d)", i, state->buffer->len + (i - 1), buf[i-1], buf[i-1], buf[i-1]);
             }
             i++;
         }
@@ -704,8 +730,8 @@ static gboolean
 sooshi_heartbeat(gpointer user_data)
 {
     SooshiState *state = SOOSHI_STATE(user_data);
-    SooshiNode *node = sooshi_node_find(state, "PCB_VERSION", NULL);
 
+    SooshiNode *node = sooshi_node_find(state, "PCB_VERSION", NULL);
     sooshi_node_request_value(state, node);
 
     return TRUE;

@@ -294,7 +294,7 @@ sooshi_node_bytes_to_value(SooshiNode *node, GByteArray *buffer)
 void
 sooshi_node_request_value(SooshiState *state, SooshiNode *node)
 {
-    sooshi_send_bytes(state, &node->op_code, 1);
+    sooshi_send_bytes(state, &node->op_code, 1, TRUE);
 }
 
 void
@@ -302,25 +302,34 @@ sooshi_node_choose(SooshiState *state, SooshiNode *node)
 {
     g_return_if_fail(state != NULL);
     g_return_if_fail(node != NULL);
-    g_return_if_fail(node->parent->type == CHOOSER);
     gint index = g_list_index(node->parent->children, node);
 
     sooshi_node_set_value(state, node->parent, g_variant_new_byte((guchar)index), TRUE);
 }
 
-void
-sooshi_node_subscribe(SooshiState *state, SooshiNode *node, sooshi_node_subscriber_t func)
+guint
+sooshi_node_subscribe(SooshiState *state, SooshiNode *node, sooshi_node_subscriber_handler_t func, gpointer user_data)
 {
     g_info("Subscribing to node '%s'", node->name);
-    node->subscriber = g_list_append(node->subscriber, (gpointer)func);
+
+    SooshiNodeSubscriber *sub = g_new0(SooshiNodeSubscriber, 1);
+    sub->id = g_list_length(node->subscriber) + 1;
+    sub->handler = func;
+    sub->user_data = user_data;
+    node->subscriber = g_list_append(node->subscriber, (gpointer)sub);
+
+    return sub->id;
 }
 
 void
-sooshi_node_notify_subscriber(SooshiState *state, SooshiNode *node)
+sooshi_node_notify_subscribers(SooshiState *state, SooshiNode *node)
 {
     GList *elem;
     for(elem = node->subscriber; elem; elem = elem->next)
-        ((sooshi_node_subscriber_t)elem->data)(state, node);
+    {
+        SooshiNodeSubscriber *sub = (SooshiNodeSubscriber*)elem->data;
+        ((sooshi_node_subscriber_handler_t)sub->handler)(state, node, sub->user_data);
+    }
 }
 
 void
@@ -348,9 +357,7 @@ sooshi_node_free_all(SooshiState *state, SooshiNode *start_node)
     if (start_node == NULL)
     {
 	if (state->root_node == NULL)
-	{
 	    return;
-	}
 
         start_node = state->root_node;
     }
@@ -366,8 +373,8 @@ sooshi_node_free_all(SooshiState *state, SooshiNode *start_node)
         sooshi_node_free_all(state, item);
     }
 
-    g_list_free(start_node->children);
-    g_list_free(start_node->subscriber);
+    g_list_free_full(start_node->children, g_free);
+    g_list_free_full(start_node->subscriber, g_free);
 
     state->root_node = NULL;
 }

@@ -8,7 +8,7 @@ sooshi_parse_node(SooshiState *state, SooshiNode *parent, const guint8 *buffer, 
     SooshiNode *node = g_new0(SooshiNode, 1);
     
     node->parent = parent;
-    node->type = (SOOSHI_NODE_TYPE)buffer[0];
+    node->type = (SOOSHI_NODE_TYPE)((gchar)buffer[0]);
     node->value = NULL;
     node->op_code = 0;
     node->has_value = FALSE;
@@ -24,7 +24,7 @@ sooshi_parse_node(SooshiState *state, SooshiNode *parent, const guint8 *buffer, 
         node->name = g_strndup((const gchar*)buffer + 2, name_len);
     else
         node->name = g_strdup("ROOT");
-    
+
     guchar num_childs = buffer[2 + name_len];
 
     buffer += 3 + name_len;
@@ -68,6 +68,7 @@ sooshi_parse_admin_tree(SooshiState *state, gulong compressed_size, const guint8
 
     gpointer result = g_memory_output_stream_get_data(G_MEMORY_OUTPUT_STREAM(out));
 
+    // Calculate CRC32 checksum of zipped payload
     crc32_t checksum = sooshi_crc32_calculate(state, buffer, compressed_size);
     g_info("Tree-CRC: %x", checksum);
     state->root_node = sooshi_parse_node(state, NULL, result, NULL);
@@ -129,11 +130,15 @@ sooshi_parse_response(SooshiState *state)
         sooshi_node_set_value(state, node, v, FALSE);
 
         g_info("Value for node '%s' updated: [%s]", node->name, sooshi_node_value_as_string(node));
-        sooshi_node_notify_subscriber(state, node);
+        sooshi_node_notify_subscribers(state, node);
 
         // We have set and received back the CRC32 checksum of the tree - setup is finished
-        if (node->op_code == 0)
+        if (node->op_code == 0 && state->initialized == FALSE)
+        {
+            sooshi_request_all_node_values(state, NULL);
 	    sooshi_on_mooshi_initialized(state);
+            state->initialized = TRUE;
+        }
     }
 }
 

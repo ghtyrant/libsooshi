@@ -30,9 +30,10 @@ sooshi_debug_dump_tree(SooshiNode *node, gint indent)
 {
     gchar *node_value = sooshi_node_value_as_string(node);
 
-    printf("%*s %d [%s] %s\n",
+    printf("%*s %d [%d | %s] %s\n",
             (gint)(indent + strlen(node->name)), node->name,
             node->op_code,
+            node->type,
             SOOSHI_NODE_TYPE_TO_STR(node->type),
             node_value);
 
