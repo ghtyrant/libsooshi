@@ -338,8 +338,6 @@ sooshi_node_notify_subscribers(SooshiState *state, SooshiNode *node)
 void
 sooshi_request_all_node_values(SooshiState *state, SooshiNode *start)
 {
-    sooshi_send_bytes(state, &node->op_code, 1, TRUE);
-
     if (start == NULL)
         start = state->root_node;
 
