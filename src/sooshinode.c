@@ -324,6 +324,9 @@ sooshi_node_subscribe(SooshiState *state, SooshiNode *node, sooshi_node_subscrib
 void
 sooshi_node_notify_subscribers(SooshiState *state, SooshiNode *node)
 {
+    if (node->subscriber == NULL)
+        return;
+
     GList *elem;
     for(elem = node->subscriber; elem; elem = elem->next)
     {
@@ -335,6 +338,8 @@ sooshi_node_notify_subscribers(SooshiState *state, SooshiNode *node)
 void
 sooshi_request_all_node_values(SooshiState *state, SooshiNode *start)
 {
+    sooshi_send_bytes(state, &node->op_code, 1, TRUE);
+
     if (start == NULL)
         start = state->root_node;
 
@@ -375,6 +380,7 @@ sooshi_node_free_all(SooshiState *state, SooshiNode *start_node)
 
     g_list_free_full(start_node->children, g_free);
     g_list_free_full(start_node->subscriber, g_free);
+    start_node->subscriber = NULL;
 
     state->root_node = NULL;
 }

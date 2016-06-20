@@ -20,11 +20,17 @@ $(TARGET): $(OBJECTS)
 %.o: %.c
 	$(CC) $(CFLAGS) -c $^ -o $@
 
-run: $(TARGET)
+run: all
 	LD_LIBRARY_PATH=../ G_MESSAGES_DEBUG=all ./$(TARGET)
 
-gdb: $(TARGET)
+gdb: all
 	LD_LIBRARY_PATH=../ G_MESSAGES_DEBUG=all gdb $(TARGET)
+
+valgrind: all
+	LD_LIBRARY_PATH=../ valgrind --tool=memcheck --leak-check=full --show-leak-kinds=definite,indirect,possible --show-reachable=no --leak-resolution=high --num-callers=20 --trace-children=no --child-silent-after-fork=yes --track-fds=yes --track-origins=yes ./$(TARGET) 2>&1 | tee valgrind.log
+
+callgrind: all
+	LD_LIBRARY_PATH=../ valgrind --tool=callgrind ./$(TARGET)
 
 clean:
 	rm $(TARGET) $(OBJECTS)

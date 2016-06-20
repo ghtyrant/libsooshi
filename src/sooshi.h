@@ -34,6 +34,10 @@
     #define SOOSHI_LOCAL
 #endif
 
+/* Debugging */
+#define SOOSHI_START_PROFILE(x) gint64 __##x##__ = g_get_real_time();
+#define SOOSHI_STOP_PROFILE(x) g_info("PROFILE '%s': %.4fms", #x, (g_get_real_time() - __##x##__) / 1000.0);
+
 /* Constants */
 #define BLUEZ_NAME "org.bluez"
 #define BLUEZ_ADAPTER_INTERFACE "org.bluez.Adapter1"
@@ -136,6 +140,9 @@ struct _SooshiState
     // This will me called once the mooshimeter is initialized
     sooshi_initialized_handler_t init_handler;
     gpointer init_handler_data;
+
+    // DEBUG
+    gint64 pcb_start;
 };
 
 typedef gboolean (*dbus_conditional_func_t)(GDBusInterface* interface, gpointer user_data);

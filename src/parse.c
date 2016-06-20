@@ -10,6 +10,7 @@ sooshi_parse_node(SooshiState *state, SooshiNode *parent, const guint8 *buffer, 
     node->parent = parent;
     node->type = (SOOSHI_NODE_TYPE)((gchar)buffer[0]);
     node->value = NULL;
+    node->subscriber = NULL;
     node->op_code = 0;
     node->has_value = FALSE;
     if (node->type >= CHOOSER)
@@ -120,6 +121,12 @@ sooshi_parse_response(SooshiState *state)
 
         SooshiNode *node = (SooshiNode*)g_ptr_array_index(state->op_code_map, op_code);
 
+        if (op_code == 3)
+        {
+            gint64 time = g_get_real_time() - state->pcb_start;
+            g_info("Ping-Time: %.2fms", time/1000.0);
+        }
+
         GVariant *v = sooshi_node_bytes_to_value(node, state->buffer);
 
         // bytes_to_value might return null if there's not enough data here
@@ -129,8 +136,18 @@ sooshi_parse_response(SooshiState *state)
 
         sooshi_node_set_value(state, node, v, FALSE);
 
-        g_info("Value for node '%s' updated: [%s]", node->name, sooshi_node_value_as_string(node));
+        gchar *strval = sooshi_node_value_as_string(node);
+        g_info("Value for node '%s' updated: [%s]", node->name, strval);
+        g_free(strval);
+
         sooshi_node_notify_subscribers(state, node);
+
+        if (node->op_code == 25)
+        {
+            gint64 time = g_get_real_time() - state->pcb_start;
+            g_info("Last time updated: %.2fms (Frequency: %.2fHz)", time / 1000.0, 1.0 / time);
+            state->pcb_start = g_get_real_time();
+        }
 
         // We have set and received back the CRC32 checksum of the tree - setup is finished
         if (node->op_code == 0 && state->initialized == FALSE)

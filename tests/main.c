@@ -15,9 +15,15 @@ void channel1_update(SooshiState *state, SooshiNode *node, gpointer user_data)
 
 void channel2_update(SooshiState *state, SooshiNode *node, gpointer user_data)
 {
+    static gint counter = 0;
+    counter++;
     printf("Channel 2: %f\n", g_variant_get_double(node->value));
-    sooshi_stop(state);
-    sooshi_state_delete(state);
+
+    if (counter == 30)
+    {
+        sooshi_stop(state);
+        sooshi_state_delete(state);
+    }
 }
 
 
@@ -25,11 +31,12 @@ void mooshi_initialized(SooshiState *state, gpointer user_data)
 {
     g_info("Mooshimeter initialized, starting subscribers!");
 
-    sooshi_node_subscribe(state, sooshi_node_find(state, "BAT_V", NULL), battery_update, NULL);
-    sooshi_node_subscribe(state, sooshi_node_find(state, "CH1:VALUE", NULL), channel1_update, NULL);
+    //sooshi_node_subscribe(state, sooshi_node_find(state, "BAT_V", NULL), battery_update, NULL);
+    //sooshi_node_subscribe(state, sooshi_node_find(state, "CH1:VALUE", NULL), channel1_update, NULL);
     sooshi_node_subscribe(state, sooshi_node_find(state, "CH2:VALUE", NULL), channel2_update, NULL);
 
     sooshi_node_choose(state, sooshi_node_find(state, "SAMPLING:TRIGGER:CONTINUOUS", NULL));
+    sooshi_node_choose(state, sooshi_node_find(state, "SAMPLING:RATE:1000", NULL));
     //sooshi_node_choose(state, sooshi_node_find(state, "CH2:MAPPING:TEMP:350", NULL));
 }
 

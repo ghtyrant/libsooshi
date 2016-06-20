@@ -112,6 +112,8 @@ sooshi_send_bytes(SooshiState *state, guchar *buffer, gsize len, gboolean block)
             NULL,
             NULL);
     }
+
+    g_variant_builder_unref(b);
 }
 
 void
@@ -348,6 +350,7 @@ sooshi_cond_is_mooshimeter(GDBusInterface *interface, gpointer user_data)
             break;
         }
     }
+    g_variant_iter_free(iter);
     g_variant_unref(v_uuids);
 
     return found;
@@ -624,9 +627,9 @@ sooshi_on_serial_out_ready(GDBusProxy *proxy, GVariant *changed_properties, GStr
         g_variant_unref(value);
 
         g_byte_array_append(state->buffer, buf, i - 1);
+
         sooshi_parse_response(state);
     }
-
     g_variant_dict_unref(dict);
 }
 
@@ -730,9 +733,12 @@ static gboolean
 sooshi_heartbeat(gpointer user_data)
 {
     SooshiState *state = SOOSHI_STATE(user_data);
-
+    
     SooshiNode *node = sooshi_node_find(state, "PCB_VERSION", NULL);
+    
+    state->pcb_start = g_get_real_time();
     sooshi_node_request_value(state, node);
+
 
     return TRUE;
 }
