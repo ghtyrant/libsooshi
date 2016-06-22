@@ -209,7 +209,7 @@ SOOSHI_LOCAL void sooshi_node_send_value(SooshiState *state, SooshiNode *node);
 void sooshi_node_free_all(SooshiState *state, SooshiNode *start_node);
 
 // Transfer helper functions
-SOOSHI_LOCAL GVariant *sooshi_node_bytes_to_value(SooshiNode *node, GByteArray *buffer);
+SOOSHI_LOCAL GByteArray *sooshi_node_bytes_to_value(SooshiNode *node, GByteArray *buffer, GVariant **result);
 SOOSHI_LOCAL gint sooshi_node_value_to_bytes(SooshiNode *node, guchar *buffer);
 
 // CRC-32 Stuff
