@@ -140,9 +140,6 @@ struct _SooshiState
     // This will me called once the mooshimeter is initialized
     sooshi_initialized_handler_t init_handler;
     gpointer init_handler_data;
-
-    // DEBUG
-    gint64 pcb_start;
 };
 
 typedef gboolean (*dbus_conditional_func_t)(GDBusInterface* interface, gpointer user_data);
