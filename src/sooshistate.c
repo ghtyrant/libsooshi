@@ -270,7 +270,8 @@ sooshi_state_dispose(GObject *object)
     SooshiState *state = SOOSHI_STATE(object);
 
     // Stop heartbeat source
-    g_source_remove(state->heartbeat_source_id);
+    if (state->heartbeat_source_id > 0)
+        g_source_remove(state->heartbeat_source_id);
 
     if (state->listening == TRUE)
         sooshi_stop_listening_to_mooshi(state);
@@ -313,16 +314,6 @@ sooshi_state_finalize(GObject *object)
 static void
 sooshi_state_init(SooshiState *state)
 {
-    g_signal_new("mooshimeter-connected",
-            SOOSHI_TYPE_STATE,
-            G_SIGNAL_RUN_LAST,
-            0,
-            NULL,
-            NULL,
-            NULL,
-            G_TYPE_NONE,
-            0);
-
     state->buffer = g_byte_array_new();
     state->send_sequence = 0;
     state->recv_sequence = 0;
