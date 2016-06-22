@@ -2,7 +2,7 @@
 #define SOOSHI_H_
 
 #include <gio/gio.h>
-#include <gobject/gobject.h>
+#include <glib-object.h>
 
 /* Library symbol visibilty magic */
 #if defined _WIN32 || defined __CYGWIN__
