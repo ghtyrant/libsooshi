@@ -25,7 +25,13 @@ run: $(TARGET)
 
 clean:
 	rm $(TARGET) $(OBJECTS)
+	rm -rf doc/html
 
 test:
 	make -C tests/
 	./tests/test
+
+PHONY: doc
+
+docs: $(SOURCES)
+	doxygen doc/Doxyfile

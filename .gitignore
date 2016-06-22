@@ -4,3 +4,4 @@ libsooshi.so
 .ycm_extra_conf.py
 test
 *.swp
+doc/html
