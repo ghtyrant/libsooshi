@@ -1,0 +1,4 @@
+install:
+    - apt-get install libglib2.0-dev
+
+script: make
