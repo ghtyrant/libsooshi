@@ -617,19 +617,22 @@ sooshi_on_serial_out_ready(GDBusProxy *proxy, GVariant *changed_properties, GStr
         gint i = 0;
         while (g_variant_iter_loop(iter, "y", &tmp))
         {
-            if (i >= 1)
+            // Don't add recv sequence to result buffer
+            if (i == 0)
             {
-                buf[i-1] = tmp;
-                //g_debug("    [%d:%d] %x (%c, %d)", i, state->buffer->len + (i - 1), buf[i-1], buf[i-1], buf[i-1]);
+                i++;
+                continue;
             }
+
+            buf[i-1] = tmp;
             i++;
         }
         g_variant_unref(value);
 
-        g_byte_array_append(state->buffer, buf, i - 1);
-
+        state->buffer = g_byte_array_append(state->buffer, buf, i - 1);
         sooshi_parse_response(state);
     }
+
     g_variant_dict_unref(dict);
 }
 
@@ -733,12 +736,8 @@ static gboolean
 sooshi_heartbeat(gpointer user_data)
 {
     SooshiState *state = SOOSHI_STATE(user_data);
-    
     SooshiNode *node = sooshi_node_find(state, "PCB_VERSION", NULL);
-    
-    state->pcb_start = g_get_real_time();
     sooshi_node_request_value(state, node);
-
 
     return TRUE;
 }
