@@ -25,3 +25,7 @@ run: $(TARGET)
 
 clean:
 	rm $(TARGET) $(OBJECTS)
+
+test:
+	make -C tests/
+	./tests/test
