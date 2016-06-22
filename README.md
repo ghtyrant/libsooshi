@@ -1,4 +1,4 @@
-# libsooshi
+# libsooshi [![Build Status](https://travis-ci.org/ghtyrant/libsooshi.svg?branch=master)](https://travis-ci.org/ghtyrant/libsooshi)
 
 This is a library to interface with Mooshim Engineering's [Mooshimeter](https://moosh.im/), a wireless multimeter and data logger.
 
@@ -27,6 +27,3 @@ This library links against:
  * gobject
 
 For Bluetooth communication, BlueZ is required. Make sure it's a recent version which supports BLE/GATT. You most likely will have to enable experimental support (run bluetoothd with --experimental).
-
-## Build status
-[![Build Status](https://travis-ci.org/ghtyrant/libsooshi.svg?branch=master)](https://travis-ci.org/ghtyrant/libsooshi)
