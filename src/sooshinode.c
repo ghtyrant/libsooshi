@@ -184,8 +184,11 @@ sooshi_node_value_to_bytes(SooshiNode *node, guchar *buffer)
             memcpy(buffer, (gchar*)&s32, 4); return 4;
 
         case VAL_STR:
-            tmp = g_variant_get_string(node->value, &len); 
-            memcpy(buffer, tmp, len); return len;
+            tmp = g_variant_get_string(node->value, &len);
+            // s16 = buffer->data[1] | (gint16)buffer->data[2] << 8;
+            buffer[0] = (guint16)(len & 0xFF);
+            buffer[1] = (guint16)(len >> 8);
+            memcpy(buffer + 2, tmp, len); return len + 2;
 
         case VAL_FLT:
             flt = g_variant_get_double(node->value);
@@ -281,7 +284,8 @@ sooshi_node_bytes_to_value(SooshiNode *node, GByteArray *buffer, GVariant **resu
 
         default:
             g_error("Unsupported data type in sooshi_node_bytes_to_value(): %d", node->type);
-            return NULL;
+            *result = NULL;
+            return buffer;
     }
 }
 
