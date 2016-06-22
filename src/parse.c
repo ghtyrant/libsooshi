@@ -117,48 +117,39 @@ sooshi_parse_response(SooshiState *state)
     }
     else
     {
-        if (op_code >= state->op_code_map->len)
+        while (state->buffer->len > 0)
         {
-            g_warning("Unknown opcode: %u", op_code);
-            return;
-        }
+            if (op_code >= state->op_code_map->len)
+            {
+                g_warning("Unknown opcode: %u", op_code);
+                return;
+            }
 
-        SooshiNode *node = (SooshiNode*)g_ptr_array_index(state->op_code_map, op_code);
+            SooshiNode *node = (SooshiNode*)g_ptr_array_index(state->op_code_map, op_code);
 
-        if (op_code == 3)
-        {
-            gint64 time = g_get_real_time() - state->pcb_start;
-            g_info("Ping-Time: %.2fms", time/1000.0);
-        }
+            GVariant *v = NULL;
+            state->buffer = sooshi_node_bytes_to_value(node, state->buffer, &v);
 
-        GVariant *v = sooshi_node_bytes_to_value(node, state->buffer);
+            // bytes_to_value might return null if there's not enough data here
+            // yet to fully parse a string
+            if (v == NULL)
+                return;
 
-        // bytes_to_value might return null if there's not enough data here
-        // yet to fully parse a string
-        if (v == NULL)
-            return;
+            sooshi_node_set_value(state, node, v, FALSE);
 
-        sooshi_node_set_value(state, node, v, FALSE);
+            gchar *strval = sooshi_node_value_as_string(node);
+            g_info("Value for node '%s' (%d) updated: [%s]", node->name, node->op_code, strval);
+            g_free(strval);
 
-        gchar *strval = sooshi_node_value_as_string(node);
-        g_info("Value for node '%s' updated: [%s]", node->name, strval);
-        g_free(strval);
+            sooshi_node_notify_subscribers(state, node);
 
-        sooshi_node_notify_subscribers(state, node);
-
-        if (node->op_code == 25)
-        {
-            gint64 time = g_get_real_time() - state->pcb_start;
-            g_info("Last time updated: %.2fms (Frequency: %.2fHz)", time / 1000.0, 1.0 / time);
-            state->pcb_start = g_get_real_time();
-        }
-
-        // We have set and received back the CRC32 checksum of the tree - setup is finished
-        if (node->op_code == 0 && state->initialized == FALSE)
-        {
-            sooshi_request_all_node_values(state, NULL);
-	    sooshi_on_mooshi_initialized(state);
-            state->initialized = TRUE;
+            // We have set and received back the CRC32 checksum of the tree - setup is finished
+            if (node->op_code == 0 && state->initialized == FALSE)
+            {
+                sooshi_request_all_node_values(state, NULL);
+                sooshi_on_mooshi_initialized(state);
+                state->initialized = TRUE;
+            }
         }
     }
 }

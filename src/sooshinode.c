@@ -199,8 +199,8 @@ sooshi_node_value_to_bytes(SooshiNode *node, guchar *buffer)
     return 0;
 }
 
-GVariant *
-sooshi_node_bytes_to_value(SooshiNode *node, GByteArray *buffer)
+GByteArray *
+sooshi_node_bytes_to_value(SooshiNode *node, GByteArray *buffer, GVariant **result)
 {
     gchar* tmp;
     guint16 u16;
@@ -208,82 +208,76 @@ sooshi_node_bytes_to_value(SooshiNode *node, GByteArray *buffer)
     gint16 s16;
     gint32 s32;
     float flt;
-    GVariant *v;
 
     // buffer->data[0] still contains the op code
     switch(node->type)
     {
         case VAL_U8:
         case CHOOSER:
-            v = g_variant_new_byte(buffer->data[1]);
-            g_byte_array_remove_range(buffer, 0, 2);
-            return v;
+            *result = g_variant_new_byte(buffer->data[1]);
+            return g_byte_array_remove_range(buffer, 0, 2);
 
         case VAL_U16:
             u16 = buffer->data[1] | (guint16)buffer->data[2] << 8;
-            v = g_variant_new_uint16(u16);
-            g_byte_array_remove_range(buffer, 0, 3);
-            return v;
+            *result = g_variant_new_uint16(u16);
+            return g_byte_array_remove_range(buffer, 0, 3);
 
         case VAL_U32:
             u32 = buffer->data[1] | (guint32)buffer->data[2] << 8
                 | (guint32)buffer->data[3] << 16 | (guint32)buffer->data[4] << 24;
-            v = g_variant_new_uint32(u32);
-            g_byte_array_remove_range(buffer, 0, 5);
-            return v;
+            *result = g_variant_new_uint32(u32);
+            return g_byte_array_remove_range(buffer, 0, 5);
 
         case VAL_S8:
-            v = g_variant_new_byte((gchar)buffer->data[1]);
-            g_byte_array_remove_range(buffer, 0, 2);
-            return v;
+            *result = g_variant_new_byte((gchar)buffer->data[1]);
+            return g_byte_array_remove_range(buffer, 0, 2);
 
         case VAL_S16:
             s16 = buffer->data[1] | (gint16)buffer->data[2] << 8;
-            v = g_variant_new_int16(s16);
-            g_byte_array_remove_range(buffer, 0, 3);
-            return v;
+            *result = g_variant_new_int16(s16);
+            return g_byte_array_remove_range(buffer, 0, 3);
 
         case VAL_S32:
             s32 = buffer->data[1] | (gint32)buffer->data[2] << 8
                 | (gint32)buffer->data[3] << 16 | (gint32)buffer->data[4] << 24;
-            v = g_variant_new_int32(s32);
-            g_byte_array_remove_range(buffer, 0, 5);
-            return v;
+            *result = g_variant_new_int32(s32);
+            return g_byte_array_remove_range(buffer, 0, 5);
 
         case VAL_STR:
             u16 = buffer->data[1] | (guint16)buffer->data[2] << 8;
 
             if (buffer->len < u16)
-                return NULL;
+            {
+                *result = NULL;
+                return buffer;
+            }
 
             tmp = g_strndup((gchar*)buffer->data + 3, u16);
-            v = g_variant_new_string(tmp);
+            *result = g_variant_new_string(tmp);
             g_free(tmp);
-            g_byte_array_remove_range(buffer, 0, u16 + 3);
-
-            return v;
+            return g_byte_array_remove_range(buffer, 0, u16 + 3);
 
         case VAL_BIN:
             u16 = buffer->data[1] | (guint16)buffer->data[2] << 8;
 
             if (buffer->len < u16)
-                return NULL;
+            {
+                *result = NULL;
+                return buffer;
+            }
 
             tmp = g_strndup((gchar*)buffer->data + 3, u16);
-            v = g_variant_new_bytestring(tmp);
+            *result = g_variant_new_bytestring(tmp);
             g_free(tmp);
-            g_byte_array_remove_range(buffer, 0, u16 + 3);
-
-            return v;
+            return g_byte_array_remove_range(buffer, 0, u16 + 3);
 
         case VAL_FLT:
             ((guchar*)&flt)[0] = buffer->data[1];
             ((guchar*)&flt)[1] = buffer->data[2];
             ((guchar*)&flt)[2] = buffer->data[3];
             ((guchar*)&flt)[3] = buffer->data[4];
-            v = g_variant_new_double(flt);
-            g_byte_array_remove_range(buffer, 0, 5);
-            return v;
+            *result = g_variant_new_double(flt);
+            return g_byte_array_remove_range(buffer, 0, 5);
 
         default:
             g_error("Unsupported data type in sooshi_node_bytes_to_value(): %d", node->type);
