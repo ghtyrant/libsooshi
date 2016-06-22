@@ -1,4 +1,7 @@
-install:
-    - apt-get install libglib2.0-dev
+language: c
+
+before_install:
+    - sudo apt-get update -qq
+    - sudo apt-get install -qq libglib2.0-dev
 
 script: make
