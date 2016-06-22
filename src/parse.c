@@ -45,7 +45,6 @@ sooshi_parse_node(SooshiState *state, SooshiNode *parent, const guint8 *buffer, 
     return node;
 }
 
-
 static void
 sooshi_parse_admin_tree(SooshiState *state, gulong compressed_size, const guint8 *buffer)
 {
@@ -82,6 +81,11 @@ sooshi_parse_admin_tree(SooshiState *state, gulong compressed_size, const guint8
         sooshi_node_set_value(state, crc_node, g_variant_new_uint32(checksum), TRUE);
     else
         g_error("Error finding node ADMIN:CRC32!");
+
+
+    // Initialize the mooshimeter's time for logging
+    guint time_utc = g_get_real_time() / 1000;
+    sooshi_node_set_value(state, sooshi_node_find(state, "TIME_UTC", NULL), g_variant_new_uint32(time_utc), TRUE);
 
     g_output_stream_close(out, NULL, NULL);
     g_output_stream_close(z_out, NULL, NULL);
