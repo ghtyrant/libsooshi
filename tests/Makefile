@@ -5,7 +5,7 @@ LD := $(CC)
 GLIB_CFLAGS  := $(shell pkg-config --cflags glib-2.0 gobject-2.0 gio-2.0)
 GLIB_LDFLAGS := $(shell pkg-config --libs glib-2.0 gobject-2.0 gio-2.0)
 
-CFLAGS  := -Wall -g $(GLIB_CFLAGS) -I../src/
+CFLAGS  := -Wall -std=c99 -g $(GLIB_CFLAGS) -I../src/
 LDFLAGS := $(GLIB_LDFLAGS)
 
 TARGET  := test
