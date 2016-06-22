@@ -2,6 +2,10 @@
 #include <string.h>
 #include <sooshi.h>
 
+#ifndef g_assert_cmpmem
+    #define g_assert_cmpmem(m1, l1, m2, l2) g_assert_true((l1) == (l2) && memcmp((m1), (m2), (l1)) == 0)
+#endif
+
 typedef struct
 {
     SooshiState *state;
