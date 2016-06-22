@@ -100,24 +100,24 @@ sooshi_parse_admin_tree(SooshiState *state, gulong compressed_size, const guint8
 void
 sooshi_parse_response(SooshiState *state)
 {
-    guint8 op_code = state->buffer->data[0];
-    guint16 length = 0;
-
-    if (op_code == 1)
+    while (state->buffer->len > 0)
     {
-        length = state->buffer->data[1] | state->buffer->data[2] << 8;
+        guint8 op_code = state->buffer->data[0];
+        guint16 length = 0;
 
-        // Did we receive the full tree yet?
-        if (state->buffer->len - 1 < length)
-            return;
+        if (op_code == 1)
+        {
+            length = state->buffer->data[1] | state->buffer->data[2] << 8;
 
-        g_debug("Size of tree: %d", length);
-        sooshi_parse_admin_tree(state, length, state->buffer->data + 3);
-        state->buffer = g_byte_array_remove_range(state->buffer, 0, length + 3);
-    }
-    else
-    {
-        while (state->buffer->len > 0)
+            // Did we receive the full tree yet?
+            if (state->buffer->len - 1 < length)
+                return;
+
+            g_debug("Size of tree: %d", length);
+            sooshi_parse_admin_tree(state, length, state->buffer->data + 3);
+            state->buffer = g_byte_array_remove_range(state->buffer, 0, length + 3);
+        }
+        else
         {
             if (op_code >= state->op_code_map->len)
             {
