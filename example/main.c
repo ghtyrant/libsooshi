@@ -19,7 +19,7 @@ void channel2_update(SooshiState *state, SooshiNode *node, gpointer user_data)
     counter++;
     printf("Channel 2: %f\n", g_variant_get_double(node->value));
 
-    if (counter == 30)
+    if (counter == 200)
     {
         sooshi_stop(state);
         sooshi_state_delete(state);
