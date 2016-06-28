@@ -19,13 +19,12 @@ void channel2_update(SooshiState *state, SooshiNode *node, gpointer user_data)
     counter++;
     printf("Channel 2: %f\n", g_variant_get_double(node->value));
 
-    if (counter == 200)
+    if (counter == 2)
     {
         sooshi_stop(state);
         sooshi_state_delete(state);
     }
 }
-
 
 void mooshi_initialized(SooshiState *state, gpointer user_data)
 {
@@ -40,13 +39,34 @@ void mooshi_initialized(SooshiState *state, gpointer user_data)
     //sooshi_node_choose(state, sooshi_node_find(state, "CH2:MAPPING:TEMP:350", NULL));
 }
 
+void bt_scan_timeout(SooshiState *state, gpointer user_data)
+{
+    g_info("Scanning timed out!");
+    sooshi_stop(state);
+}
+
 int main()
 {
     g_log_set_handler(G_LOG_DOMAIN, G_LOG_LEVEL_MASK, g_log_default_handler, NULL);
 
-    SooshiState *state;
-    state = sooshi_state_new();
-    sooshi_setup(state, mooshi_initialized, NULL);
+    sooshi_error_t error = 0;
+    SooshiState *state = sooshi_state_new(&error);
+
+    if (error != SOOSHI_ERROR_SUCCESS)
+    {
+        g_error(sooshi_error_message(error));
+        return -1;
+    }
+
+    error = sooshi_setup(state, mooshi_initialized, NULL,
+                                bt_scan_timeout, NULL);
+
+    if (error != SOOSHI_ERROR_SUCCESS)
+    {
+        g_error(sooshi_error_message(error));
+        return -1;
+    }
+
     sooshi_run(state);
 
     return 0;

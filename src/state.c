@@ -8,7 +8,7 @@
 
 G_DEFINE_TYPE(SooshiState, sooshi_state, G_TYPE_OBJECT)
 
-const gchar *const SOOSHI_NODE_TYPE_STR[] =
+const gchar *const __SOOSHI_NODE_TYPE_STR[] =
 {
     "NOTSET",
     "PLAIN",
@@ -33,6 +33,7 @@ static void sooshi_state_dispose(GObject *object);
 
 static gboolean sooshi_cond_is_mooshimeter(GDBusInterface *interface, gpointer user_data);
 static gboolean sooshi_cond_has_uuid(GDBusInterface *interface, gpointer user_data);
+static gboolean sooshi_cond_adapter_is_powered(GDBusInterface *interface, gpointer user_data);
 
 // Mooshimeter functions
 static void sooshi_add_mooshi(SooshiState *state, GDBusProxy *meter);
@@ -49,7 +50,7 @@ static void sooshi_on_serial_out_ready(GDBusProxy *proxy, GVariant *changed_prop
 static gboolean sooshi_find_adapter(SooshiState *state);
 static gboolean sooshi_find_mooshi(SooshiState *state);
 static gboolean sooshi_start_scan(SooshiState *state);
-static gboolean sooshi_stop_scan(SooshiState *state);
+static gboolean sooshi_stop_scan(SooshiState *state, gboolean stop_timeout);
 static gboolean sooshi_heartbeat(gpointer user_data);
 
 void
@@ -134,11 +135,11 @@ sooshi_node_send_value(SooshiState *state, SooshiNode *node)
 }
 
 SooshiState *
-sooshi_state_new()
+sooshi_state_new(sooshi_error_t *error)
 {
     SooshiState *state = g_object_new(SOOSHI_TYPE_STATE, 0);
 
-    GError *error = NULL;
+    GError *err = NULL;
     state->object_manager = g_dbus_object_manager_client_new_for_bus_sync(
             /* connection */
             G_BUS_TYPE_SYSTEM,
@@ -157,15 +158,20 @@ sooshi_state_new()
             /* cancellable */
             NULL,
             /* error */
-            &error);
+            &err);
 
-    if (error != NULL)
+    if (err != NULL)
     {
-        printf("Error creating sooshi state: %s\n", error->message);
-        g_error_free(error);
+        if (error)
+            *error = SOOSHI_ERROR_DBUS_CONNECTION_FAILED;
+
+        g_error_free(err);
         g_object_unref(state);
         return NULL;
     }
+
+    if (error)
+        *error = SOOSHI_ERROR_SUCCESS;
 
     return state;
 }
@@ -211,32 +217,37 @@ sooshi_dbus_find_interface_proxy_if(SooshiState *state, const gchar* interface_n
     return found ? G_DBUS_PROXY(found) : NULL;
 }
 
-void sooshi_setup(SooshiState *state, sooshi_initialized_handler_t init_handler, gpointer user_data)
+sooshi_error_t
+sooshi_setup(SooshiState *state, sooshi_callback_t init_handler, gpointer init_data,
+        sooshi_callback_t scan_timeout_handler, gpointer scan_timeout_data)
 {
     state->init_handler = init_handler;
-    state->init_handler_data = user_data;
+    state->init_handler_data = init_data;
+
+    state->scan_timeout_handler = scan_timeout_handler;
+    state->scan_timeout_data = scan_timeout_data;
+
+    // We couldn't find it, let's scan
+    if (!sooshi_find_adapter(state))
+    {
+        g_warning("Could not find bluetooth adapter!");
+        return SOOSHI_ERROR_NO_ADAPTER_FOUND;
+    }
 
     if (!sooshi_find_mooshi(state))
     {
         g_warning("Could not find Mooshimeter!");
 
-        // We couldn't find it, let's scan
-        if (!sooshi_find_adapter(state))
-        {
-            g_warning("Could not find bluetooth adapter!");
-            return;
-        }
-
-        g_info("Found bluetooth adapter, ready to scan!");
-
         if (!sooshi_start_scan(state))
         {
             g_warning("Error starting bluetooth scan!");
-            return;
+            return SOOSHI_ERROR_SCAN_FAILED;
         }
     }
     else
         sooshi_connect_mooshi(state);
+
+    return SOOSHI_ERROR_SUCCESS;
 }
 
 void
@@ -249,7 +260,7 @@ sooshi_run(SooshiState *state)
 
 SOOSHI_API void sooshi_stop(SooshiState *state)
 {
-    g_debug("Starting main loop ...");
+    g_debug("Stopping main loop ...");
     g_main_loop_quit(state->loop);
 }
 
@@ -280,7 +291,7 @@ sooshi_state_dispose(GObject *object)
         sooshi_disconnect_mooshi(state);
 
     if (state->scanning == TRUE)
-        sooshi_stop_scan(state);
+        sooshi_stop_scan(state, TRUE);
 
     g_clear_object(&state->object_manager);
     g_clear_object(&state->adapter);
@@ -290,13 +301,7 @@ sooshi_state_dispose(GObject *object)
 
     if (state->loop) g_main_loop_unref(state->loop);
     state->loop = NULL;
-
-    if (state->buffer) g_byte_array_unref(state->buffer);
-    state->buffer = NULL;
-
-    if (state->op_code_map) g_ptr_array_free(state->op_code_map, TRUE);
-    state->op_code_map = NULL;
-
+ 
     G_OBJECT_CLASS(sooshi_state_parent_class)->dispose(object);
 }
 
@@ -307,6 +312,12 @@ sooshi_state_finalize(GObject *object)
 
     g_free(state->mooshimeter_dbus_path);
     sooshi_node_free_all(state, NULL);
+
+    if (state->buffer) g_byte_array_unref(state->buffer);
+    state->buffer = NULL;
+
+    if (state->op_code_map) g_ptr_array_free(state->op_code_map, TRUE);
+    state->op_code_map = NULL;
 
     G_OBJECT_CLASS(sooshi_state_parent_class)->finalize(object);
 }
@@ -356,12 +367,22 @@ sooshi_cond_has_uuid(GDBusInterface *interface, gpointer user_data)
     return (g_ascii_strcasecmp(uuid, (gchar*)user_data) == 0);
 }
 
+static gboolean
+sooshi_cond_adapter_is_powered(GDBusInterface *interface, gpointer user_data)
+{
+    GVariant *v_powered = g_dbus_proxy_get_cached_property(G_DBUS_PROXY(interface), "Powered");
+    gboolean powered = g_variant_get_boolean(v_powered);
+
+    return powered;
+}
+
+
 static void
 sooshi_add_mooshi(SooshiState *state, GDBusProxy *meter)
 {
     state->mooshimeter_dbus_path = g_strdup(g_dbus_proxy_get_object_path(meter));
     state->mooshimeter = meter;
-    g_info("Added Mooshimeter(Path: %s)", state->mooshimeter_dbus_path);
+    g_info("Added Mooshimeter (Path: %s)", state->mooshimeter_dbus_path);
 }
 
 static void
@@ -421,7 +442,10 @@ sooshi_connect_mooshi(SooshiState *state)
     state->connected = TRUE;
 
     if (state->serial_in && state->serial_out)
+    {
+        g_info("Serial In & Serial Out already available!");
         sooshi_initialize_mooshi(state);
+    }
 
     return TRUE;
 }
@@ -540,7 +564,7 @@ sooshi_on_object_added(GDBusObjectManager *objman, GDBusObject *obj, gpointer us
     {
         sooshi_add_mooshi(state, G_DBUS_PROXY(inter));
         g_info("Found device '%s', looks like a Mooshimeter!", name);
-        sooshi_stop_scan(state);
+        sooshi_stop_scan(state, TRUE);
         sooshi_connect_mooshi(state);
     }
     else
@@ -634,7 +658,7 @@ sooshi_find_adapter(SooshiState *state)
     g_return_val_if_fail(state != NULL, FALSE);
     g_return_val_if_fail(state->object_manager != NULL, FALSE);
 
-    state->adapter = sooshi_dbus_find_interface_proxy_if(state, BLUEZ_ADAPTER_INTERFACE, NULL, NULL);
+    state->adapter = sooshi_dbus_find_interface_proxy_if(state, BLUEZ_ADAPTER_INTERFACE, sooshi_cond_adapter_is_powered, NULL);
     return (state->adapter != NULL);
 }
 
@@ -654,6 +678,19 @@ sooshi_find_mooshi(SooshiState *state)
 }
 
 static gboolean
+sooshi_scan_timed_out(gpointer user_data)
+{
+    SooshiState *state = user_data;
+    sooshi_stop_scan(state, FALSE);
+
+    if (state->scan_timeout_handler)
+        state->scan_timeout_handler(state, state->scan_timeout_data);
+
+    state->scan_timeout_source_id = 0;    
+    return FALSE;
+}
+
+static gboolean
 sooshi_start_scan(SooshiState *state)
 {
     g_return_val_if_fail(state != NULL, FALSE);
@@ -668,6 +705,8 @@ sooshi_start_scan(SooshiState *state)
         "object-added",
         G_CALLBACK(sooshi_on_object_added),
         state);
+
+    state->scan_timeout_source_id = g_timeout_add_seconds(10, sooshi_scan_timed_out, (gpointer) state);
 
     GError *error = NULL;
     g_dbus_proxy_call_sync(state->adapter,
@@ -693,11 +732,22 @@ sooshi_start_scan(SooshiState *state)
 }
 
 static gboolean
-sooshi_stop_scan(SooshiState *state)
+sooshi_stop_scan(SooshiState *state, gboolean stop_timeout)
 {
     // Can't stop what wasn't started!
     if (state->scanning != TRUE)
         return FALSE;
+
+    if (stop_timeout)
+    {
+        if (state->scan_timeout_source_id > 0)
+        {
+            g_source_remove(state->scan_timeout_source_id);
+            state->scan_timeout_source_id = 0;
+        }
+    }
+
+    g_info("Stopping Bluetooth scan!");
 
     g_signal_handler_disconnect(state->object_manager, state->scan_signal_id);
     state->scan_signal_id = 0;

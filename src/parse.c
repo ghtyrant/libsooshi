@@ -99,7 +99,7 @@ sooshi_parse_admin_tree(SooshiState *state, gulong compressed_size, const guint8
 void
 sooshi_parse_response(SooshiState *state)
 {
-    while (state->buffer->len > 0)
+    while (state->buffer && state->buffer->len > 0)
     {
         guint8 op_code = state->buffer->data[0];
         guint16 length = 0;

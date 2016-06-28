@@ -24,14 +24,18 @@ run: $(TARGET)
 	G_MESSAGES_DEBUG=all ./$(TARGET)
 
 clean:
-	rm $(TARGET) $(OBJECTS)
+	rm -rf $(TARGET) $(OBJECTS)
 	rm -rf doc/html
 
-test:
+tests:
 	make -C tests/
 	./tests/test
 
-PHONY: doc
+examples:
+	make -C example/
 
-docs: $(SOURCES)
+doc: $(SOURCES)
 	doxygen doc/Doxyfile
+
+.PHONY: doc examples tests
+

@@ -56,6 +56,18 @@ typedef guint32 crc32_t;
 #define CRC32_WIDTH               (8 * sizeof(crc32_t))
 #define CRC32_TOPBIT              (1 << (CRC32_WIDTH - 1))
 
+/* Error handling */
+typedef enum
+{
+  SOOSHI_ERROR_SUCCESS,
+  SOOSHI_ERROR_NO_ADAPTER_FOUND,
+  SOOSHI_ERROR_SCAN_FAILED,
+  SOOSHI_ERROR_DBUS_CONNECTION_FAILED
+} sooshi_error_t;
+
+SOOSHI_API extern const gchar* const __SOOSHI_ERROR_STR[];
+#define sooshi_error_message(x) (__SOOSHI_ERROR_STR[(x)])
+
 /* Tree Data Types */
 typedef enum
 {
@@ -74,8 +86,8 @@ typedef enum
     VAL_FLT
 } SOOSHI_NODE_TYPE;
 
-extern const gchar* const SOOSHI_NODE_TYPE_STR[];
-#define SOOSHI_NODE_TYPE_TO_STR(x) (SOOSHI_NODE_TYPE_STR[(x)+1])
+extern const gchar* const __SOOSHI_NODE_TYPE_STR[];
+#define SOOSHI_NODE_TYPE_TO_STR(x) (__SOOSHI_NODE_TYPE_STR[(x)+1])
 
 /* Mooshi Tree Node */
 typedef struct _SooshiNode SooshiNode;
@@ -97,26 +109,35 @@ struct _SooshiNode
 typedef struct _SooshiState SooshiState;
 typedef struct _SooshiStateClass SooshiStateClass;
 
-typedef void (*sooshi_initialized_handler_t)(SooshiState *state, gpointer user_data);
+typedef void (*sooshi_callback_t)(SooshiState *state, gpointer user_data);
 
 struct _SooshiState
 {
     GObject parent_instance;
 
-    // DBus stuff
+    // org.Bluez Object Manager
     GDBusObjectManager *object_manager;
-    GDBusProxy* adapter;
-    GDBusProxy* mooshimeter;
 
+    // Bluetooth Adapter
+    GDBusProxy* adapter;
+
+    // Mooshimeter Device
+    GDBusProxy* mooshimeter;
     gchar *mooshimeter_dbus_path;
 
+    // Gatt Characteristics of Mooshimeter
     GDBusProxy *serial_in;
     GDBusProxy *serial_out;
 
     // Signals
     gulong properties_changed_id;
     gulong scan_signal_id;
+
+    // Heartbeat Timer
     guint heartbeat_source_id;
+
+    // Scan Timeout Timer
+    guint scan_timeout_source_id;
 
     gboolean scanning;
     gboolean listening;
@@ -134,12 +155,16 @@ struct _SooshiState
     SooshiNode *root_node;
     GPtrArray *op_code_map;
 
-    //CRC32 helper
+    // CRC32 Helper
     crc32_t crc_table[256];
 
-    // This will me called once the mooshimeter is initialized
-    sooshi_initialized_handler_t init_handler;
+    // This will be called once the mooshimeter is initialized
+    sooshi_callback_t init_handler;
     gpointer init_handler_data;
+
+    // This will be called once scanning times out
+    sooshi_callback_t scan_timeout_handler;
+    gpointer scan_timeout_data;
 };
 
 typedef gboolean (*dbus_conditional_func_t)(GDBusInterface* interface, gpointer user_data);
@@ -171,9 +196,10 @@ GType sooshi_state_get_type();
 /*****************/
 /* API functions */
 /*****************/
-SOOSHI_API SooshiState *sooshi_state_new();
+SOOSHI_API SooshiState *sooshi_state_new(sooshi_error_t *error);
 SOOSHI_API void sooshi_state_delete(SooshiState *state);
-SOOSHI_API void sooshi_setup(SooshiState *state, sooshi_initialized_handler_t init_handler, gpointer user_data);
+SOOSHI_API sooshi_error_t sooshi_setup(SooshiState *state, sooshi_callback_t init_handler, gpointer init_data,
+    sooshi_callback_t scan_timeout_handler, gpointer scan_timeout_data);
 SOOSHI_API void sooshi_run(SooshiState *state);
 SOOSHI_API void sooshi_stop(SooshiState *state);
 
