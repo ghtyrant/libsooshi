@@ -14,7 +14,7 @@ typedef struct
 static void
 state_wrapper_set_up(StateWrapper *wrapper, gconstpointer user_data)
 {
-    wrapper->state = sooshi_state_new();
+    wrapper->state = sooshi_state_new(NULL);
 }
 
 static void
