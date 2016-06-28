@@ -211,6 +211,7 @@ SOOSHI_API SooshiNode *sooshi_node_find(SooshiState *state, gchar *path, SooshiN
 SOOSHI_API void sooshi_node_set_value(SooshiState *state, SooshiNode *node, GVariant *value, gboolean send_update);
 SOOSHI_API void sooshi_node_request_value(SooshiState *state, SooshiNode *node);
 SOOSHI_API void sooshi_node_choose(SooshiState *state, SooshiNode *node);
+SOOSHI_API void sooshi_node_choose_by_index(SooshiState *state, SooshiNode *node, guchar index);
 SOOSHI_API guint sooshi_node_subscribe(SooshiState *state, SooshiNode *node, sooshi_node_subscriber_handler_t func, gpointer user_data);
 SOOSHI_API void sooshi_node_notify_subscribers(SooshiState *state, SooshiNode *node);
 

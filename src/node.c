@@ -305,6 +305,18 @@ sooshi_node_choose(SooshiState *state, SooshiNode *node)
     sooshi_node_set_value(state, node->parent, g_variant_new_byte((guchar)index), TRUE);
 }
 
+void
+sooshi_node_choose_by_index(SooshiState *state, SooshiNode *node, guchar index)
+{
+    g_return_if_fail(state != NULL);
+    g_return_if_fail(node != NULL);
+
+    if (index >= g_list_length(node->children))
+        return;
+
+    sooshi_node_set_value(state, node, g_variant_new_byte(index), TRUE);
+}
+
 guint
 sooshi_node_subscribe(SooshiState *state, SooshiNode *node, sooshi_node_subscriber_handler_t func, gpointer user_data)
 {
