@@ -7,4 +7,4 @@ before_install:
     - sudo apt-get update -qq
     - sudo apt-get install -qq libglib2.0-dev
 
-script: make && make clean && make examples && make tests
+script: make && make examples && make clean && make tests
