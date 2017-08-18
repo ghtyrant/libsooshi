@@ -275,6 +275,12 @@ sooshi_node_bytes_to_value(SooshiNode *node, GByteArray *buffer, GVariant **resu
             return g_byte_array_remove_range(buffer, 0, u16 + 3);
 
         case VAL_FLT:
+
+            if (buffer->len < 5) {
+              *result = NULL;
+              return buffer;
+            }
+
             ((guchar*)&flt)[0] = buffer->data[1];
             ((guchar*)&flt)[1] = buffer->data[2];
             ((guchar*)&flt)[2] = buffer->data[3];
