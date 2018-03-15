@@ -26,4 +26,4 @@ This library links against:
  * gio
  * gobject
 
-For Bluetooth communication, BlueZ is required. Make sure it's a recent version which supports BLE/GATT. You most likely will have to enable experimental support (run bluetoothd with --experimental).
+For Bluetooth communication, BlueZ is required. Make sure it's a recent version which supports BLE/GATT (I have tested this with 5.46.r27.g5a765af1c-1). You most likely will have to enable experimental support (run bluetoothd with --experimental).
